@@ -27,7 +27,7 @@ namespace GestorReservas.Controllers
 
         // GET: api/Usuario
         [HttpGet]
-        public IHttpActionResult ObtenerUsuarios()
+        public IHttpActionResult Get()
         {
             // Validar JWT token
             var userInfo = ValidateJwtToken();
@@ -50,7 +50,7 @@ namespace GestorReservas.Controllers
 
         // GET: api/Usuario/{id}
         [HttpGet]
-        public IHttpActionResult ObtenerUsuario(int id)
+        public IHttpActionResult Get(int id)
         {
             // Validar JWT token
             var userInfo = ValidateJwtToken();
@@ -76,10 +76,9 @@ namespace GestorReservas.Controllers
             return Ok(usuarioResponse);
         }
 
-        // POST: api/Usuario/registro
+        // POST: api/Usuario
         [HttpPost]
-        [Route("api/Usuario/registro")]
-        public IHttpActionResult RegistrarUsuario(UsuarioRegistroDto usuarioDto)
+        public IHttpActionResult Post(UsuarioRegistroDto usuarioDto)
         {
             if (!ModelState.IsValid)
                 return BadRequest(ModelState);
@@ -121,44 +120,12 @@ namespace GestorReservas.Controllers
                 // ← QUITAR: FechaCreacion = usuario.FechaCreacion
             };
 
-            return CreatedAtRoute("DefaultApi", new { id = usuario.Id }, respuesta);
-        }
-
-        // POST: api/Usuario/login
-        [HttpPost]
-        [Route("api/Usuario/login")]
-        public IHttpActionResult Login(LoginDto loginDto)
-        {
-            if (!ModelState.IsValid)
-                return BadRequest(ModelState);
-
-            var usuario = db.Usuarios.FirstOrDefault(u => u.Email == loginDto.Email.ToLower());
-            if (usuario == null)
-                return BadRequest("Email o contraseña incorrectos");
-
-            if (!VerificarPassword(loginDto.Password, usuario.Password))
-                return BadRequest("Email o contraseña incorrectos");
-
-            // Generar token JWT
-            var token = GenerarTokenJWT(usuario);
-
-            return Ok(new
-            {
-                Token = token,
-                Usuario = new
-                {
-                    Id = usuario.Id,
-                    Nombre = usuario.Nombre,
-                    Email = usuario.Email,
-                    Rol = usuario.Rol.ToString()
-                },
-                Message = "Login exitoso"
-            });
+            return Ok(respuesta); // Cambiar CreatedAtRoute por Ok
         }
 
         // PUT: api/Usuario/{id}
         [HttpPut]
-        public IHttpActionResult ActualizarUsuario(int id, UsuarioActualizarDto usuarioDto)
+        public IHttpActionResult Put(int id, UsuarioActualizarDto usuarioDto)
         {
             if (!ModelState.IsValid)
                 return BadRequest(ModelState);
@@ -222,7 +189,7 @@ namespace GestorReservas.Controllers
 
         // DELETE: api/Usuario/{id}
         [HttpDelete]
-        public IHttpActionResult EliminarUsuario(int id)
+        public IHttpActionResult Delete(int id)
         {
             // Validar JWT token
             var userInfo = ValidateJwtToken();
@@ -262,10 +229,10 @@ namespace GestorReservas.Controllers
             });
         }
 
-        // GET: api/Usuario/perfil
+        // GET: api/Usuario/Perfil
         [HttpGet]
-        [Route("api/Usuario/perfil")]
-        public IHttpActionResult ObtenerPerfil()
+        [Route("api/Usuario/Perfil")]
+        public IHttpActionResult Perfil()
         {
             var userInfo = ValidateJwtToken();
             if (userInfo == null)
@@ -281,7 +248,6 @@ namespace GestorReservas.Controllers
                 Nombre = usuario.Nombre,
                 Email = usuario.Email,
                 Rol = usuario.Rol.ToString()
-                // ← QUITAR: FechaCreacion = usuario.FechaCreacion
             });
         }
 
