@@ -22,17 +22,6 @@ namespace GestorReservas.Controllers
             return CreatedAtRoute("DefaultApi", new { id = usuario.Id }, usuario);
         }
 
-
-        [HttpPost]
-        [Route("api/Usuario/autenticar")]
-        public IHttpActionResult AutenticarUsuario(Usuario usuario)
-        {
-            var usuarioAutenticado = db.Usuarios.FirstOrDefault(u => u.Email == usuario.Email && u.Password == usuario.Password);
-            if (usuarioAutenticado == null)
-                return Unauthorized();
-            return Ok(usuarioAutenticado);
-        }
-
         // GET: api/Usuario
         [HttpGet]
         public IEnumerable<Usuario> ObtenerUsuarios()

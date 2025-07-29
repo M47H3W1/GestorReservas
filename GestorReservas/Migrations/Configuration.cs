@@ -27,10 +27,83 @@
 
             // Espacios iniciales
             context.Espacios.AddOrUpdate(e => e.Nombre,
-                new Espacio { Nombre = "Aula 101", Tipo = TipoEspacio.Aula },
-                new Espacio { Nombre = "Laboratorio 1", Tipo = TipoEspacio.Laboratorio },
-                new Espacio { Nombre = "Auditorio Principal", Tipo = TipoEspacio.Auditorio }
-            );
+            // Aulas
+            new Espacio
+            {
+                Nombre = "Aula 101",
+                Tipo = TipoEspacio.Aula,
+                Ubicacion = "E15/P1/A101"
+            },
+            new Espacio
+            {
+                Nombre = "Aula 102",
+                Tipo = TipoEspacio.Aula,
+                Ubicacion = "E15/P1/A102"
+            },
+            new Espacio
+            {
+                Nombre = "Aula 201",
+                Tipo = TipoEspacio.Aula,
+                Ubicacion = "E15/P2/A201"
+            },
+            new Espacio
+            {
+                Nombre = "Aula 301",
+                Tipo = TipoEspacio.Aula,
+                Ubicacion = "E16/P3/A301"
+            },
+
+            // Laboratorios
+            new Espacio
+            {
+                Nombre = "Laboratorio de Redes",
+                Tipo = TipoEspacio.Laboratorio,
+                Ubicacion = "E17/P2/L001"
+            },
+            new Espacio
+            {
+                Nombre = "Laboratorio de Sistemas",
+                Tipo = TipoEspacio.Laboratorio,
+                Ubicacion = "E17/P2/L002"
+            },
+            new Espacio
+            {
+                Nombre = "Laboratorio de Hardware",
+                Tipo = TipoEspacio.Laboratorio,
+                Ubicacion = "E17/P3/L003"
+            },
+            new Espacio
+            {
+                Nombre = "Laboratorio de Programación",
+                Tipo = TipoEspacio.Laboratorio,
+                Ubicacion = "E17/P1/L004"
+            },
+            new Espacio
+            {
+                Nombre = "Laboratorio de Electrónica",
+                Tipo = TipoEspacio.Laboratorio,
+                Ubicacion = "E18/P2/L005"
+            },
+
+            // Auditorios
+            new Espacio
+            {
+                Nombre = "Auditorio Principal",
+                Tipo = TipoEspacio.Auditorio,
+                Ubicacion = "E20/P1/AU001"
+            },
+            new Espacio
+            {
+                Nombre = "Auditorio de Conferencias",
+                Tipo = TipoEspacio.Auditorio,
+                Ubicacion = "E20/P2/AU002"
+            },
+            new Espacio
+            {
+                Nombre = "Sala de Eventos",                Tipo = TipoEspacio.Auditorio,
+                Ubicacion = "E19/P1/SE001"
+            }
+        );
         }
     }
 }

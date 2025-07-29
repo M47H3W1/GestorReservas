@@ -1,16 +1,21 @@
-﻿using System.Web.Http;
-using System.Data.Entity;
+﻿using System;
+using System.Web.Http;
 using GestorReservas.DAL;
 using GestorReservas.Models;
-using System.Collections.Generic;
 using System.Linq;
-using System;
+using System.Data.Entity;
+using System.IdentityModel.Tokens.Jwt;
+using System.Text;
+using Microsoft.IdentityModel.Tokens;
+using System.Collections.Generic;
 
 namespace GestorReservas.Controllers
 {
     public class ReservaController : ApiController
     {
         private GestorReserva db = new GestorReserva();
+        private readonly string secretKey = "tu-clave-secreta-super-segura-de-al-menos-32-caracteres";
+
         // GET: api/Reserva
         [HttpGet]
         public IEnumerable<Reserva> ObtenerReservas()
@@ -35,18 +40,37 @@ namespace GestorReservas.Controllers
             if (!ModelState.IsValid)
                 return BadRequest(ModelState);
 
-            // Validar que el usuario existe y es profesor
+            // Validar JWT token
+            var userInfo = ValidateJwtToken();
+            if (userInfo == null)
+                return Unauthorized();
+
+            // Validar que el usuario existe
             var usuario = db.Usuarios.Find(reserva.UsuarioId);
             if (usuario == null)
                 return BadRequest("Usuario no encontrado");
 
-            if (usuario.Rol != RolUsuario.Profesor && usuario.Rol != RolUsuario.Coordinador)
-                return BadRequest("Solo profesores y coordinadores pueden crear reservas");
+            // Validar que el usuario del token coincide con el de la reserva
+            if (userInfo.Id != reserva.UsuarioId)
+                return BadRequest("No puedes crear reservas para otros usuarios");
 
-            // Validar disponibilidad antes de crear
+            // Validar roles
+            if (usuario.Rol != RolUsuario.Profesor && usuario.Rol != RolUsuario.Coordinador && usuario.Rol != RolUsuario.Administrador)
+                return BadRequest("Solo profesores, coordinadores y administradores pueden crear reservas");
+
+            // Validar que el espacio existe
+            var espacio = db.Espacios.Find(reserva.EspacioId);
+            if (espacio == null)
+                return BadRequest("Espacio no encontrado");
+
+            // Validar disponibilidad
+            DateTime fechaInicio = reserva.Fecha.Date;
+            DateTime fechaFin = fechaInicio.AddDays(1);
+
             var conflictos = db.Reservas
                 .Where(r => r.EspacioId == reserva.EspacioId &&
-                           r.Fecha.Date == reserva.Fecha.Date &&
+                           r.Fecha >= fechaInicio &&
+                           r.Fecha < fechaFin &&
                            r.Horario == reserva.Horario &&
                            r.Estado != EstadoReserva.Rechazada)
                 .Any();
@@ -54,12 +78,52 @@ namespace GestorReservas.Controllers
             if (conflictos)
                 return BadRequest("El espacio no está disponible en ese horario");
 
-            // Establecer estado inicial
+            // Crear reserva
             reserva.Estado = EstadoReserva.Pendiente;
-
             db.Reservas.Add(reserva);
             db.SaveChanges();
-            return CreatedAtRoute("DefaultApi", new { id = reserva.Id }, reserva);
+
+            // Recargar la reserva con las relaciones incluidas
+            var reservaCreada = db.Reservas
+                .Include(r => r.Usuario)
+                .Include(r => r.Espacio)
+                .FirstOrDefault(r => r.Id == reserva.Id);
+
+            return CreatedAtRoute("DefaultApi", new { id = reserva.Id }, reservaCreada);
+        }
+
+        private dynamic ValidateJwtToken()
+        {
+            try
+            {
+                var authHeader = Request.Headers.Authorization;
+                if (authHeader == null || authHeader.Scheme != "Bearer")
+                    return null;
+
+                var token = authHeader.Parameter;
+                var tokenHandler = new JwtSecurityTokenHandler();
+                var key = Encoding.ASCII.GetBytes(secretKey);
+
+                tokenHandler.ValidateToken(token, new TokenValidationParameters
+                {
+                    ValidateIssuerSigningKey = true,
+                    IssuerSigningKey = new SymmetricSecurityKey(key),
+                    ValidateIssuer = false,
+                    ValidateAudience = false,
+                    ClockSkew = TimeSpan.Zero
+                }, out SecurityToken validatedToken);
+
+                var jwtToken = (JwtSecurityToken)validatedToken;
+                var userId = int.Parse(jwtToken.Claims.First(x => x.Type == "id").Value);
+                var userEmail = jwtToken.Claims.First(x => x.Type == "email").Value;
+                var userRole = jwtToken.Claims.First(x => x.Type == "role").Value;
+
+                return new { Id = userId, Email = userEmail, Role = userRole };
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         // PUT: api/Reserva/{id}
@@ -86,7 +150,7 @@ namespace GestorReservas.Controllers
             db.SaveChanges();
             return Ok(reserva);
         }
-
+        // Agregar este método al ReservaController existente
         [HttpGet]
         [Route("api/Reserva/disponibilidad/{espacioId}")]
         public IHttpActionResult ConsultarDisponibilidad(int espacioId, string fecha, string horario)
@@ -95,15 +159,10 @@ namespace GestorReservas.Controllers
             if (!DateTime.TryParse(fecha, out DateTime fechaConsulta))
                 return BadRequest("Formato de fecha inválido");
 
-            // Crear el rango de fechas para el día completo
-            DateTime fechaInicio = fechaConsulta.Date;
-            DateTime fechaFin = fechaInicio.AddDays(1);
-
             // Buscar reservas que coincidan con espacio, fecha y horario
             var reservasExistentes = db.Reservas
                 .Where(r => r.EspacioId == espacioId &&
-                           r.Fecha >= fechaInicio &&
-                           r.Fecha < fechaFin &&
+                           r.Fecha.Date == fechaConsulta.Date &&
                            r.Horario == horario &&
                            r.Estado != EstadoReserva.Rechazada)
                 .Include(r => r.Usuario)
@@ -129,14 +188,9 @@ namespace GestorReservas.Controllers
             if (!DateTime.TryParse(fecha, out DateTime fechaConsulta))
                 return BadRequest("Formato de fecha inválido");
 
-            // Crear el rango de fechas para el día completo
-            DateTime fechaInicio = fechaConsulta.Date;
-            DateTime fechaFin = fechaInicio.AddDays(1);
-
             // Espacios ocupados en esa fecha/horario
             var espaciosOcupados = db.Reservas
-                .Where(r => r.Fecha >= fechaInicio &&
-                           r.Fecha < fechaFin &&
+                .Where(r => r.Fecha.Date == fechaConsulta.Date &&
                            r.Horario == horario &&
                            r.Estado != EstadoReserva.Rechazada)
                 .Select(r => r.EspacioId)
@@ -150,7 +204,6 @@ namespace GestorReservas.Controllers
 
             return Ok(espaciosDisponibles);
         }
-
         // Aprobar reserva
         [HttpPut]
         [Route("api/Reserva/{id}/aprobar")]
@@ -210,7 +263,6 @@ namespace GestorReservas.Controllers
 
             return Ok(reservasPendientes);
         }
-
         // Consultar historial de reservas por usuario
         [HttpGet]
         [Route("api/Reserva/historial/usuario/{usuarioId}")]
