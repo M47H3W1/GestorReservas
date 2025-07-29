@@ -51,7 +51,7 @@ namespace GestorReservas.Controllers
             // Validar JWT token
             var userInfo = ValidateJwtToken();
             if (userInfo == null)
-                return BadRequest("Token de autenticación inválido. Debe autenticarse para crear reservas");
+                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación inválido. Debe autenticarse para crear reservas");
 
             // Validar que el usuario existe
             var usuario = db.Usuarios.Find(reserva.UsuarioId);
@@ -276,27 +276,327 @@ namespace GestorReservas.Controllers
 
         // PUT: api/Reserva/{id}
         [HttpPut]
-        public IHttpActionResult ActualizarReserva(int id, Reserva reserva)
+        public IHttpActionResult ActualizarReserva(int id, Reserva reservaDto)
         {
             if (!ModelState.IsValid)
                 return BadRequest(ModelState);
-            if (id != reserva.Id)
-                return BadRequest();
-            db.Entry(reserva).State = EntityState.Modified;
+
+            if (id != reservaDto.Id)
+                return BadRequest("El ID de la URL no coincide con el ID del objeto");
+
+            // Validar JWT token
+            var userInfo = ValidateJwtToken();
+            if (userInfo == null)
+                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
+
+            // Buscar la reserva existente
+            var reservaExistente = db.Reservas.Include(r => r.Usuario).Include(r => r.Espacio).FirstOrDefault(r => r.Id == id);
+            if (reservaExistente == null)
+                return NotFound();
+
+            // Validaciones de permisos según rol
+            if (userInfo.Role == "Profesor")
+            {
+                // Profesor solo puede editar sus propias reservas
+                if (reservaExistente.UsuarioId != userInfo.Id)
+                    return Content(System.Net.HttpStatusCode.Unauthorized, "Los profesores solo pueden editar sus propias reservas");
+
+                // Profesor no puede cambiar el UsuarioId
+                if (reservaDto.UsuarioId != reservaExistente.UsuarioId)
+                    return BadRequest("Los profesores no pueden cambiar el usuario de la reserva");
+
+                // Profesor solo puede editar espacio y horario
+                reservaDto.UsuarioId = reservaExistente.UsuarioId;
+                reservaDto.Estado = reservaExistente.Estado; // Mantener estado actual
+            }
+            else if (userInfo.Role == "Coordinador")
+            {
+                // Coordinador puede editar cualquier reserva y cambiar usuario
+                // Pero mantiene el estado actual a menos que sea admin
+                reservaDto.Estado = reservaExistente.Estado;
+            }
+            else if (userInfo.Role == "Administrador")
+            {
+                // Administrador puede editar todo
+            }
+            else
+            {
+                return Content(System.Net.HttpStatusCode.Unauthorized, "No tiene permisos para actualizar reservas");
+            }
+
+            // Validar que el nuevo usuario existe (si se cambió)
+            if (reservaDto.UsuarioId != reservaExistente.UsuarioId)
+            {
+                var nuevoUsuario = db.Usuarios.Find(reservaDto.UsuarioId);
+                if (nuevoUsuario == null)
+                    return BadRequest($"No existe un usuario con ID {reservaDto.UsuarioId}");
+
+                // Validar que el nuevo usuario puede hacer reservas
+                if (nuevoUsuario.Rol != RolUsuario.Profesor && nuevoUsuario.Rol != RolUsuario.Coordinador && nuevoUsuario.Rol != RolUsuario.Administrador)
+                    return BadRequest("Solo profesores, coordinadores y administradores pueden tener reservas");
+            }
+
+            // Validar que el espacio existe (si se cambió)
+            if (reservaDto.EspacioId != reservaExistente.EspacioId)
+            {
+                var nuevoEspacio = db.Espacios.Find(reservaDto.EspacioId);
+                if (nuevoEspacio == null)
+                    return BadRequest($"No existe un espacio con ID {reservaDto.EspacioId}");
+
+                if (!nuevoEspacio.Disponible)
+                    return BadRequest("El espacio seleccionado no está disponible");
+            }
+
+            // Validar formato del horario (si se cambió)
+            if (reservaDto.Horario != reservaExistente.Horario)
+            {
+                var validacionHorario = ValidarHorario(reservaDto.Horario);
+                if (!validacionHorario.EsValido)
+                    return BadRequest(validacionHorario.Mensaje);
+            }
+
+            // Validar que la fecha no sea en el pasado (si se cambió)
+            if (reservaDto.Fecha.Date != reservaExistente.Fecha.Date && reservaDto.Fecha.Date < DateTime.Now.Date)
+                return BadRequest("No se pueden programar reservas para fechas pasadas");
+
+            // Validar solapamiento de horarios en el espacio (si cambió espacio, fecha u horario)
+            if (reservaDto.EspacioId != reservaExistente.EspacioId ||
+                reservaDto.Fecha.Date != reservaExistente.Fecha.Date ||
+                reservaDto.Horario != reservaExistente.Horario)
+            {
+                var validacionSolapamiento = ValidarSolapamientoEspacioParaActualizacion(
+                    reservaDto.EspacioId, reservaDto.Fecha, reservaDto.Horario, id);
+                if (!validacionSolapamiento.EsValido)
+                    return BadRequest(validacionSolapamiento.Mensaje);
+            }
+
+            // Validar conflicto de usuario (si cambió usuario, fecha u horario)
+            if (reservaDto.UsuarioId != reservaExistente.UsuarioId ||
+                reservaDto.Fecha.Date != reservaExistente.Fecha.Date ||
+                reservaDto.Horario != reservaExistente.Horario)
+            {
+                var validacionUsuario = ValidarConflictoUsuarioParaActualizacion(
+                    reservaDto.UsuarioId, reservaDto.Fecha, reservaDto.Horario, id);
+                if (!validacionUsuario.EsValido)
+                    return BadRequest(validacionUsuario.Mensaje);
+            }
+
+            // Actualizar los campos
+            reservaExistente.UsuarioId = reservaDto.UsuarioId;
+            reservaExistente.EspacioId = reservaDto.EspacioId;
+            reservaExistente.Fecha = reservaDto.Fecha;
+            reservaExistente.Horario = reservaDto.Horario;
+            reservaExistente.Estado = reservaDto.Estado;
+
+            // Si no es admin y la reserva estaba aprobada, volver a pendiente si cambió algo importante
+            if (userInfo.Role != "Administrador" && reservaExistente.Estado == EstadoReserva.Aprobada)
+            {
+                if (reservaDto.EspacioId != reservaExistente.EspacioId ||
+                    reservaDto.Fecha.Date != reservaExistente.Fecha.Date ||
+                    reservaDto.Horario != reservaExistente.Horario)
+                {
+                    reservaExistente.Estado = EstadoReserva.Pendiente;
+                }
+            }
+
+            db.Entry(reservaExistente).State = EntityState.Modified;
             db.SaveChanges();
-            return StatusCode(System.Net.HttpStatusCode.NoContent);
+
+            // Recargar con relaciones
+            var reservaActualizada = db.Reservas
+                .Include(r => r.Usuario)
+                .Include(r => r.Espacio)
+                .FirstOrDefault(r => r.Id == id);
+
+            var respuesta = new
+            {
+                Id = reservaActualizada.Id,
+                UsuarioId = reservaActualizada.UsuarioId,
+                Usuario = new
+                {
+                    Id = reservaActualizada.Usuario.Id,
+                    Nombre = reservaActualizada.Usuario.Nombre,
+                    Email = reservaActualizada.Usuario.Email,
+                    Rol = reservaActualizada.Usuario.Rol.ToString()
+                },
+                EspacioId = reservaActualizada.EspacioId,
+                Espacio = new
+                {
+                    Id = reservaActualizada.Espacio.Id,
+                    Nombre = reservaActualizada.Espacio.Nombre,
+                    Tipo = reservaActualizada.Espacio.Tipo.ToString(),
+                    Ubicacion = reservaActualizada.Espacio.Ubicacion
+                },
+                Fecha = reservaActualizada.Fecha,
+                Horario = reservaActualizada.Horario,
+                Estado = reservaActualizada.Estado.ToString(),
+                Message = "Reserva actualizada exitosamente"
+            };
+
+            return Ok(respuesta);
+        }
+
+        // NUEVA FUNCIÓN: Validar solapamiento excluyendo la reserva actual
+        private ValidacionResult ValidarSolapamientoEspacioParaActualizacion(int espacioId, DateTime fecha, string horario, int reservaIdExcluir)
+        {
+            DateTime fechaInicio = fecha.Date;
+            DateTime fechaFin = fechaInicio.AddDays(1);
+
+            var reservasExistentes = db.Reservas
+                .Where(r => r.EspacioId == espacioId &&
+                           r.Fecha >= fechaInicio &&
+                           r.Fecha < fechaFin &&
+                           r.Estado != EstadoReserva.Rechazada &&
+                           r.Id != reservaIdExcluir) // Excluir la reserva actual
+                .Include(r => r.Usuario)
+                .ToList();
+
+            var partesHorarioNuevo = horario.Split('-');
+            var horaInicioNueva = TimeSpan.Parse(partesHorarioNuevo[0]);
+            var horaFinNueva = TimeSpan.Parse(partesHorarioNuevo[1]);
+
+            foreach (var reserva in reservasExistentes)
+            {
+                var partesHorarioExistente = reserva.Horario.Split('-');
+                var horaInicioExistente = TimeSpan.Parse(partesHorarioExistente[0]);
+                var horaFinExistente = TimeSpan.Parse(partesHorarioExistente[1]);
+
+                // Verificar solapamiento
+                bool hayConflicto = !(horaFinNueva <= horaInicioExistente || horaInicioNueva >= horaFinExistente);
+
+                if (hayConflicto)
+                {
+                    return new ValidacionResult(false, $"El horario {horario} se solapa con una reserva existente ({reserva.Horario}) del usuario {reserva.Usuario.Nombre} en estado {reserva.Estado}");
+                }
+            }
+
+            return new ValidacionResult(true, "No hay conflictos de horario");
+        }
+
+        // NUEVA FUNCIÓN: Validar conflicto de usuario excluyendo la reserva actual
+        private ValidacionResult ValidarConflictoUsuarioParaActualizacion(int usuarioId, DateTime fecha, string horario, int reservaIdExcluir)
+        {
+            DateTime fechaInicio = fecha.Date;
+            DateTime fechaFin = fechaInicio.AddDays(1);
+
+            var reservasUsuario = db.Reservas
+                .Where(r => r.UsuarioId == usuarioId &&
+                           r.Fecha >= fechaInicio &&
+                           r.Fecha < fechaFin &&
+                           r.Estado != EstadoReserva.Rechazada &&
+                           r.Id != reservaIdExcluir) // Excluir la reserva actual
+                .Include(r => r.Espacio)
+                .ToList();
+
+            var partesHorarioNuevo = horario.Split('-');
+            var horaInicioNueva = TimeSpan.Parse(partesHorarioNuevo[0]);
+            var horaFinNueva = TimeSpan.Parse(partesHorarioNuevo[1]);
+
+            foreach (var reserva in reservasUsuario)
+            {
+                var partesHorarioExistente = reserva.Horario.Split('-');
+                var horaInicioExistente = TimeSpan.Parse(partesHorarioExistente[0]);
+                var horaFinExistente = TimeSpan.Parse(partesHorarioExistente[1]);
+
+                // Verificar solapamiento
+                bool hayConflicto = !(horaFinNueva <= horaInicioExistente || horaInicioNueva >= horaFinExistente);
+
+                if (hayConflicto)
+                {
+                    return new ValidacionResult(false, $"El usuario ya tiene una reserva en el horario {reserva.Horario} para el espacio {reserva.Espacio.Nombre} en estado {reserva.Estado}. No puede tener dos reservas simultáneas.");
+                }
+            }
+
+            return new ValidacionResult(true, "No hay conflictos de usuario");
         }
 
         // DELETE: api/Reserva/{id}
         [HttpDelete]
         public IHttpActionResult BorrarReserva(int id)
         {
-            var reserva = db.Reservas.Find(id);
+            // Validar JWT token
+            var userInfo = ValidateJwtToken();
+            if (userInfo == null)
+                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
+
+            // Buscar la reserva existente
+            var reserva = db.Reservas.Include(r => r.Usuario).Include(r => r.Espacio).FirstOrDefault(r => r.Id == id);
             if (reserva == null)
                 return NotFound();
+
+            // Validaciones de permisos según rol
+            if (userInfo.Role == "Profesor")
+            {
+                // Profesor solo puede eliminar sus propias reservas
+                if (reserva.UsuarioId != userInfo.Id)
+                    return Content(System.Net.HttpStatusCode.Unauthorized, "Los profesores solo pueden eliminar sus propias reservas");
+            }
+            else if (userInfo.Role == "Coordinador")
+            {
+                // Coordinador puede eliminar cualquier reserva
+            }
+            else if (userInfo.Role == "Administrador")
+            {
+                // Administrador puede eliminar cualquier reserva
+            }
+            else
+            {
+                return Content(System.Net.HttpStatusCode.Unauthorized, "No tiene permisos para eliminar reservas");
+            }
+
+            // Validar si la reserva se puede eliminar según su estado
+            if (reserva.Estado == EstadoReserva.Aprobada)
+            {
+                // Solo coordinadores y administradores pueden eliminar reservas aprobadas
+                if (userInfo.Role != "Coordinador" && userInfo.Role != "Administrador")
+                    return BadRequest("No se pueden eliminar reservas aprobadas. Contacte al coordinador.");
+
+                // Validar si la reserva ya pasó (opcional: evitar eliminar reservas del pasado)
+                if (reserva.Fecha.Date < DateTime.Now.Date)
+                {
+                    if (userInfo.Role != "Administrador")
+                        return BadRequest("No se pueden eliminar reservas de fechas pasadas. Solo los administradores pueden hacerlo.");
+                }
+            }
+
+            // Guardar información para la respuesta
+            var respuestaEliminacion = new
+            {
+                Id = reserva.Id,
+                UsuarioId = reserva.UsuarioId,
+                Usuario = new
+                {
+                    Id = reserva.Usuario.Id,
+                    Nombre = reserva.Usuario.Nombre,
+                    Email = reserva.Usuario.Email,
+                    Rol = reserva.Usuario.Rol.ToString()
+                },
+                EspacioId = reserva.EspacioId,
+                Espacio = new
+                {
+                    Id = reserva.Espacio.Id,
+                    Nombre = reserva.Espacio.Nombre,
+                    Tipo = reserva.Espacio.Tipo.ToString(),
+                    Ubicacion = reserva.Espacio.Ubicacion
+                },
+                Fecha = reserva.Fecha,
+                Horario = reserva.Horario,
+                Estado = reserva.Estado.ToString(),
+                EliminadoPor = new
+                {
+                    Id = userInfo.Id,
+                    Email = userInfo.Email,
+                    Rol = userInfo.Role
+                },
+                FechaEliminacion = DateTime.Now,
+                Message = "Reserva eliminada exitosamente"
+            };
+
+            // Eliminar la reserva
             db.Reservas.Remove(reserva);
             db.SaveChanges();
-            return Ok(reserva);
+
+            return Ok(respuestaEliminacion);
         }
 
         // Agregar este método al ReservaController existente
@@ -309,17 +609,67 @@ namespace GestorReservas.Controllers
             if (!DateTime.TryParse(fecha, out fechaConsulta))
                 return BadRequest("Formato de fecha inválido");
 
-            // Buscar reservas que coincidan con espacio, fecha y horario
+            // Validar formato del horario
+            var validacionHorario = ValidarHorario(horario);
+            if (!validacionHorario.EsValido)
+                return BadRequest(validacionHorario.Mensaje);
+
+            // Crear rango del día
+            DateTime fechaInicio = fechaConsulta.Date;
+            DateTime fechaFin = fechaInicio.AddDays(1);
+
+            // Buscar reservas en el mismo espacio y fecha (sin importar el horario específico)
             var reservasExistentes = db.Reservas
                 .Where(r => r.EspacioId == espacioId &&
-                           r.Fecha.Date == fechaConsulta.Date &&
-                           r.Horario == horario &&
+                           r.Fecha >= fechaInicio &&
+                           r.Fecha < fechaFin &&
                            r.Estado != EstadoReserva.Rechazada)
                 .Include(r => r.Usuario)
                 .Include(r => r.Espacio)
                 .ToList();
 
-            var disponible = !reservasExistentes.Any();
+            // Verificar solapamientos
+            var partesHorarioConsulta = horario.Split('-');
+            var horaInicioConsulta = TimeSpan.Parse(partesHorarioConsulta[0]);
+            var horaFinConsulta = TimeSpan.Parse(partesHorarioConsulta[1]);
+
+            var reservasConflictivas = new List<dynamic>();
+            bool disponible = true;
+
+            foreach (var reserva in reservasExistentes)
+            {
+                var partesHorarioExistente = reserva.Horario.Split('-');
+                var horaInicioExistente = TimeSpan.Parse(partesHorarioExistente[0]);
+                var horaFinExistente = TimeSpan.Parse(partesHorarioExistente[1]);
+
+                // Verificar solapamiento
+                bool hayConflicto = !(horaFinConsulta <= horaInicioExistente || horaInicioConsulta >= horaFinExistente);
+
+                if (hayConflicto)
+                {
+                    disponible = false;
+                    reservasConflictivas.Add(new
+                    {
+                        Id = reserva.Id,
+                        Usuario = new
+                        {
+                            Id = reserva.Usuario.Id,
+                            Nombre = reserva.Usuario.Nombre,
+                            Email = reserva.Usuario.Email
+                        },
+                        Espacio = new
+                        {
+                            Id = reserva.Espacio.Id,
+                            Nombre = reserva.Espacio.Nombre,
+                            Ubicacion = reserva.Espacio.Ubicacion
+                        },
+                        Fecha = reserva.Fecha,
+                        Horario = reserva.Horario,
+                        Estado = reserva.Estado.ToString(),
+                        TipoConflicto = "Solapamiento de horarios"
+                    });
+                }
+            }
 
             return Ok(new
             {
@@ -327,10 +677,14 @@ namespace GestorReservas.Controllers
                 Fecha = fechaConsulta.Date,
                 Horario = horario,
                 Disponible = disponible,
-                ReservasExistentes = reservasExistentes
+                TotalReservasConflictivas = reservasConflictivas.Count,
+                ReservasConflictivas = reservasConflictivas,
+                Mensaje = disponible ? "Espacio disponible para el horario solicitado" :
+                                      $"Espacio no disponible. Se encontraron {reservasConflictivas.Count} conflicto(s) de horario"
             });
         }
 
+        // También corregir ConsultarEspaciosDisponibles
         [HttpGet]
         [Route("api/Reserva/espacios-disponibles")]
         public IHttpActionResult ConsultarEspaciosDisponibles(string fecha, string horario)
@@ -339,21 +693,57 @@ namespace GestorReservas.Controllers
             if (!DateTime.TryParse(fecha, out fechaConsulta))
                 return BadRequest("Formato de fecha inválido");
 
-            // Espacios ocupados en esa fecha/horario
-            var espaciosOcupados = db.Reservas
-                .Where(r => r.Fecha.Date == fechaConsulta.Date &&
-                           r.Horario == horario &&
+            // Validar formato del horario
+            var validacionHorario = ValidarHorario(horario);
+            if (!validacionHorario.EsValido)
+                return BadRequest(validacionHorario.Mensaje);
+
+            // Crear rango del día
+            DateTime fechaInicio = fechaConsulta.Date;
+            DateTime fechaFin = fechaInicio.AddDays(1);
+
+            // Obtener todas las reservas del día
+            var reservasDelDia = db.Reservas
+                .Where(r => r.Fecha >= fechaInicio &&
+                           r.Fecha < fechaFin &&
                            r.Estado != EstadoReserva.Rechazada)
-                .Select(r => r.EspacioId)
-                .Distinct()
                 .ToList();
+
+            // Verificar solapamientos para cada reserva
+            var partesHorarioConsulta = horario.Split('-');
+            var horaInicioConsulta = TimeSpan.Parse(partesHorarioConsulta[0]);
+            var horaFinConsulta = TimeSpan.Parse(partesHorarioConsulta[1]);
+
+            var espaciosOcupados = new List<int>();
+
+            foreach (var reserva in reservasDelDia)
+            {
+                var partesHorarioExistente = reserva.Horario.Split('-');
+                var horaInicioExistente = TimeSpan.Parse(partesHorarioExistente[0]);
+                var horaFinExistente = TimeSpan.Parse(partesHorarioExistente[1]);
+
+                // Verificar solapamiento
+                bool hayConflicto = !(horaFinConsulta <= horaInicioExistente || horaInicioConsulta >= horaFinExistente);
+
+                if (hayConflicto && !espaciosOcupados.Contains(reserva.EspacioId))
+                {
+                    espaciosOcupados.Add(reserva.EspacioId);
+                }
+            }
 
             // Espacios disponibles
             var espaciosDisponibles = db.Espacios
-                .Where(e => !espaciosOcupados.Contains(e.Id))
+                .Where(e => e.Disponible && !espaciosOcupados.Contains(e.Id))
                 .ToList();
 
-            return Ok(espaciosDisponibles);
+            return Ok(new
+            {
+                Fecha = fechaConsulta.Date,
+                Horario = horario,
+                TotalEspaciosDisponibles = espaciosDisponibles.Count,
+                TotalEspaciosOcupados = espaciosOcupados.Count,
+                EspaciosDisponibles = espaciosDisponibles
+            });
         }
 
         // Aprobar reserva
@@ -361,6 +751,15 @@ namespace GestorReservas.Controllers
         [Route("api/Reserva/{id}/aprobar")]
         public IHttpActionResult AprobarReserva(int id)
         {
+            // Validar JWT token
+            var userInfo = ValidateJwtToken();
+            if (userInfo == null)
+                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
+
+            // Solo administradores pueden aprobar reservas
+            if (userInfo.Role != "Administrador")
+                return Content(System.Net.HttpStatusCode.Forbidden, "Solo los administradores pueden aprobar reservas");
+
             var reserva = db.Reservas.Find(id);
             if (reserva == null)
                 return NotFound();
@@ -375,7 +774,14 @@ namespace GestorReservas.Controllers
             {
                 Message = "Reserva aprobada exitosamente",
                 ReservaId = id,
-                Estado = reserva.Estado
+                Estado = reserva.Estado.ToString(),
+                AprobadoPor = new
+                {
+                    Id = userInfo.Id,
+                    Email = userInfo.Email,
+                    Rol = userInfo.Role
+                },
+                FechaAprobacion = DateTime.Now
             });
         }
 
@@ -384,6 +790,15 @@ namespace GestorReservas.Controllers
         [Route("api/Reserva/{id}/rechazar")]
         public IHttpActionResult RechazarReserva(int id)
         {
+            // Validar JWT token
+            var userInfo = ValidateJwtToken();
+            if (userInfo == null)
+                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
+
+            // Solo administradores pueden rechazar reservas
+            if (userInfo.Role != "Administrador")
+                return Content(System.Net.HttpStatusCode.Forbidden, "Solo los administradores pueden rechazar reservas");
+
             var reserva = db.Reservas.Find(id);
             if (reserva == null)
                 return NotFound();
@@ -398,7 +813,14 @@ namespace GestorReservas.Controllers
             {
                 Message = "Reserva rechazada exitosamente",
                 ReservaId = id,
-                Estado = reserva.Estado
+                Estado = reserva.Estado.ToString(),
+                RechazadoPor = new
+                {
+                    Id = userInfo.Id,
+                    Email = userInfo.Email,
+                    Rol = userInfo.Role
+                },
+                FechaRechazo = DateTime.Now
             });
         }
 

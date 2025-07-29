@@ -16,8 +16,7 @@ namespace GestorReservas.Controllers
     public class AuthController : ApiController
     {
         private GestorReserva db = new GestorReserva();
-        // ← ELIMINAR: private readonly string secretKey = "...";
-
+        
         // Constructor para validar configuración
         public AuthController()
         {
@@ -37,7 +36,7 @@ namespace GestorReservas.Controllers
 
             // Buscar usuario por email
             var usuario = db.Usuarios
-                .FirstOrDefault(u => u.Email.ToLower() == request.Email.ToLower());
+                .FirstOrDefault(u => u.Email == request.Email);
 
             if (usuario == null)
                 return BadRequest("Credenciales inválidas");

@@ -17,9 +17,8 @@ namespace GestorReservas.Controllers
     public class UsuarioController : ApiController
     {
         private GestorReserva db = new GestorReserva();
-        // ← ELIMINAR: private readonly string secretKey = "...";
 
-        // Constructor para validar configuración
+        
         public UsuarioController()
         {
             AppConfig.ValidateJwtConfiguration();

@@ -176,6 +176,10 @@
     <Compile Include="Migrations\202507290340090_InitialCreate5.Designer.cs">
       <DependentUpon>202507290340090_InitialCreate5.cs</DependentUpon>
     </Compile>
+    <Compile Include="Migrations\202507292140231_Nuevos-Usuarios.cs" />
+    <Compile Include="Migrations\202507292140231_Nuevos-Usuarios.Designer.cs">
+      <DependentUpon>202507292140231_Nuevos-Usuarios.cs</DependentUpon>
+    </Compile>
     <Compile Include="Migrations\Configuration.cs" />
     <Compile Include="Models\DTOs\EspacioDTOs.cs" />
     <Compile Include="Models\DTOs\ReservaDTOs.cs" />
@@ -218,6 +222,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="Migrations\202507290340090_InitialCreate5.resx">
       <DependentUpon>202507290340090_InitialCreate5.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Migrations\202507292140231_Nuevos-Usuarios.resx">
+      <DependentUpon>202507292140231_Nuevos-Usuarios.cs</DependentUpon>
     </EmbeddedResource>
   </ItemGroup>
   <PropertyGroup>

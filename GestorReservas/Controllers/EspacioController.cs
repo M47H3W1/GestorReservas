@@ -6,7 +6,7 @@ using System.Web.Http;
 using GestorReservas.DAL;
 using GestorReservas.Models;
 using GestorReservas.Models.DTOs;
-using GestorReservas.Utils; // ← AGREGAR ESTA LÍNEA
+using GestorReservas.Utils; 
 using System.IdentityModel.Tokens.Jwt;
 using System.Text;
 using Microsoft.IdentityModel.Tokens;
@@ -16,9 +16,7 @@ namespace GestorReservas.Controllers
     public class EspacioController : ApiController
     {
         private GestorReserva db = new GestorReserva();
-        // ← ELIMINAR: private readonly string secretKey = "...";
-
-        // Constructor para validar configuración
+        
         public EspacioController()
         {
             AppConfig.ValidateJwtConfiguration();
