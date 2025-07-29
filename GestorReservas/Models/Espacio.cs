@@ -21,6 +21,11 @@ namespace GestorReservas.Models
         public string Nombre { get; set; }
         [Required]
         public TipoEspacio Tipo { get; set; }
+        [Required]
         public string Ubicacion { get; set; }
+        public int Capacidad { get; set; }
+        public string Descripcion { get; set; }
+        public bool Disponible { get; set; }
+
     }
 }

@@ -164,12 +164,29 @@
     <Compile Include="Migrations\202507290134412_InitialCreate2.Designer.cs">
       <DependentUpon>202507290134412_InitialCreate2.cs</DependentUpon>
     </Compile>
+    <Compile Include="Migrations\202507290330085_InitialCreate3.cs" />
+    <Compile Include="Migrations\202507290330085_InitialCreate3.Designer.cs">
+      <DependentUpon>202507290330085_InitialCreate3.cs</DependentUpon>
+    </Compile>
+    <Compile Include="Migrations\202507290331284_InitialCreate4.cs" />
+    <Compile Include="Migrations\202507290331284_InitialCreate4.Designer.cs">
+      <DependentUpon>202507290331284_InitialCreate4.cs</DependentUpon>
+    </Compile>
+    <Compile Include="Migrations\202507290340090_InitialCreate5.cs" />
+    <Compile Include="Migrations\202507290340090_InitialCreate5.Designer.cs">
+      <DependentUpon>202507290340090_InitialCreate5.cs</DependentUpon>
+    </Compile>
     <Compile Include="Migrations\Configuration.cs" />
+    <Compile Include="Models\DTOs\EspacioDTOs.cs" />
+    <Compile Include="Models\DTOs\ReservaDTOs.cs" />
+    <Compile Include="Models\DTOs\UsuarioDTOs.cs" />
     <Compile Include="Models\Espacio.cs" />
-    <Compile Include="Models\LoginRequest.cs" />
+    <Compile Include="Models\DTOs\AuthDTOs.cs" />
     <Compile Include="Models\Reserva.cs" />
     <Compile Include="Models\Usuario.cs" />
+    <Compile Include="Models\ValidacionResult.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Utils\AppConfig.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
@@ -192,6 +209,15 @@
     </EmbeddedResource>
     <EmbeddedResource Include="Migrations\202507290134412_InitialCreate2.resx">
       <DependentUpon>202507290134412_InitialCreate2.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Migrations\202507290330085_InitialCreate3.resx">
+      <DependentUpon>202507290330085_InitialCreate3.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Migrations\202507290331284_InitialCreate4.resx">
+      <DependentUpon>202507290331284_InitialCreate4.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Migrations\202507290340090_InitialCreate5.resx">
+      <DependentUpon>202507290340090_InitialCreate5.cs</DependentUpon>
     </EmbeddedResource>
   </ItemGroup>
   <PropertyGroup>

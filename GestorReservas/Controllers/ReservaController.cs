@@ -7,14 +7,22 @@ using System.Data.Entity;
 using System.IdentityModel.Tokens.Jwt;
 using System.Text;
 using Microsoft.IdentityModel.Tokens;
+using System.Globalization;
 using System.Collections.Generic;
+using GestorReservas.Utils; // ← AGREGAR ESTA LÍNEA
 
 namespace GestorReservas.Controllers
 {
     public class ReservaController : ApiController
     {
         private GestorReserva db = new GestorReserva();
-        private readonly string secretKey = "tu-clave-secreta-super-segura-de-al-menos-32-caracteres";
+        // ← ELIMINAR: private readonly string secretKey = "...";
+
+        // Constructor para validar configuración
+        public ReservaController()
+        {
+            AppConfig.ValidateJwtConfiguration();
+        }
 
         // GET: api/Reserva
         [HttpGet]
@@ -43,16 +51,16 @@ namespace GestorReservas.Controllers
             // Validar JWT token
             var userInfo = ValidateJwtToken();
             if (userInfo == null)
-                return Unauthorized();
+                return BadRequest("Token de autenticación inválido. Debe autenticarse para crear reservas");
 
             // Validar que el usuario existe
             var usuario = db.Usuarios.Find(reserva.UsuarioId);
             if (usuario == null)
-                return BadRequest("Usuario no encontrado");
+                return BadRequest(string.Format("No existe un usuario con ID {0}", reserva.UsuarioId));
 
             // Validar que el usuario del token coincide con el de la reserva
             if (userInfo.Id != reserva.UsuarioId)
-                return BadRequest("No puedes crear reservas para otros usuarios");
+                return BadRequest("No puede crear reservas para otros usuarios");
 
             // Validar roles
             if (usuario.Rol != RolUsuario.Profesor && usuario.Rol != RolUsuario.Coordinador && usuario.Rol != RolUsuario.Administrador)
@@ -61,22 +69,26 @@ namespace GestorReservas.Controllers
             // Validar que el espacio existe
             var espacio = db.Espacios.Find(reserva.EspacioId);
             if (espacio == null)
-                return BadRequest("Espacio no encontrado");
+                return BadRequest(string.Format("No existe un espacio con ID {0}", reserva.EspacioId));
 
-            // Validar disponibilidad
-            DateTime fechaInicio = reserva.Fecha.Date;
-            DateTime fechaFin = fechaInicio.AddDays(1);
+            // NUEVA VALIDACIÓN: Validar formato y lógica del horario
+            var validacionHorario = ValidarHorario(reserva.Horario);
+            if (!validacionHorario.EsValido)
+                return BadRequest(validacionHorario.Mensaje);
 
-            var conflictos = db.Reservas
-                .Where(r => r.EspacioId == reserva.EspacioId &&
-                           r.Fecha >= fechaInicio &&
-                           r.Fecha < fechaFin &&
-                           r.Horario == reserva.Horario &&
-                           r.Estado != EstadoReserva.Rechazada)
-                .Any();
+            // NUEVA VALIDACIÓN: Validar que la fecha no sea en el pasado
+            if (reserva.Fecha.Date < DateTime.Now.Date)
+                return BadRequest("No se pueden hacer reservas para fechas pasadas");
 
-            if (conflictos)
-                return BadRequest("El espacio no está disponible en ese horario");
+            // NUEVA VALIDACIÓN: Validar solapamiento de horarios para el mismo espacio
+            var validacionSolapamiento = ValidarSolapamientoEspacio(reserva.EspacioId, reserva.Fecha, reserva.Horario);
+            if (!validacionSolapamiento.EsValido)
+                return BadRequest(validacionSolapamiento.Mensaje);
+
+            // NUEVA VALIDACIÓN: Validar que el usuario no tenga otra reserva en el mismo horario
+            var validacionUsuario = ValidarConflictoUsuario(reserva.UsuarioId, reserva.Fecha, reserva.Horario);
+            if (!validacionUsuario.EsValido)
+                return BadRequest(validacionUsuario.Mensaje);
 
             // Crear reserva
             reserva.Estado = EstadoReserva.Pendiente;
@@ -89,7 +101,143 @@ namespace GestorReservas.Controllers
                 .Include(r => r.Espacio)
                 .FirstOrDefault(r => r.Id == reserva.Id);
 
-            return CreatedAtRoute("DefaultApi", new { id = reserva.Id }, reservaCreada);
+            // Crear respuesta sin datos sensibles
+            var respuesta = new
+            {
+                Id = reservaCreada.Id,
+                UsuarioId = reservaCreada.UsuarioId,
+                Usuario = new
+                {
+                    Id = reservaCreada.Usuario.Id,
+                    Nombre = reservaCreada.Usuario.Nombre,
+                    Email = reservaCreada.Usuario.Email,
+                    Rol = reservaCreada.Usuario.Rol.ToString()
+                },
+                EspacioId = reservaCreada.EspacioId,
+                Espacio = new
+                {
+                    Id = reservaCreada.Espacio.Id,
+                    Nombre = reservaCreada.Espacio.Nombre,
+                    Tipo = reservaCreada.Espacio.Tipo.ToString(),
+                    Ubicacion = reservaCreada.Espacio.Ubicacion
+                },
+                Fecha = reservaCreada.Fecha,
+                Horario = reservaCreada.Horario,
+                Estado = reservaCreada.Estado.ToString(),
+                Message = "Reserva creada exitosamente"
+            };
+
+            return CreatedAtRoute("DefaultApi", new { id = reserva.Id }, respuesta);
+        }
+
+        // NUEVA FUNCIÓN: Validar formato y lógica del horario
+        private ValidacionResult ValidarHorario(string horario)
+        {
+            if (string.IsNullOrEmpty(horario))
+                return new ValidacionResult(false, "El horario es obligatorio");
+
+            // Validar formato HH:mm-HH:mm
+            var partes = horario.Split('-');
+            if (partes.Length != 2)
+                return new ValidacionResult(false, "El horario debe tener el formato HH:mm-HH:mm (ejemplo: 09:00-10:00)");
+
+            TimeSpan horaInicio;
+            TimeSpan horaFin;
+
+            if (!TimeSpan.TryParse(partes[0], out horaInicio))
+                return new ValidacionResult(false, string.Format("Hora de inicio inválida: {0}. Use formato HH:mm", partes[0]));
+
+            if (!TimeSpan.TryParse(partes[1], out horaFin))
+                return new ValidacionResult(false, string.Format("Hora de fin inválida: {0}. Use formato HH:mm", partes[1]));
+
+            // Validar que hora inicio sea menor que hora fin
+            if (horaInicio >= horaFin)
+                return new ValidacionResult(false, "La hora de inicio debe ser menor que la hora de fin");
+
+            // Validar que la duración sea al menos 30 minutos
+            var duracion = horaFin - horaInicio;
+            if (duracion.TotalMinutes < 30)
+                return new ValidacionResult(false, "La reserva debe tener una duración mínima de 30 minutos");
+
+            // Validar horarios laborales (6:00 AM - 10:00 PM)
+            if (horaInicio < TimeSpan.FromHours(6) || horaFin > TimeSpan.FromHours(22))
+                return new ValidacionResult(false, "Las reservas solo se permiten entre 06:00 y 22:00");
+
+            return new ValidacionResult(true, "Horario válido");
+        }
+
+        // NUEVA FUNCIÓN: Validar solapamiento de horarios en el mismo espacio
+        private ValidacionResult ValidarSolapamientoEspacio(int espacioId, DateTime fecha, string horario)
+        {
+            DateTime fechaInicio = fecha.Date;
+            DateTime fechaFin = fechaInicio.AddDays(1);
+
+            var reservasExistentes = db.Reservas
+                .Where(r => r.EspacioId == espacioId &&
+                           r.Fecha >= fechaInicio &&
+                           r.Fecha < fechaFin &&
+                           r.Estado != EstadoReserva.Rechazada)
+                .Include(r => r.Usuario)
+                .ToList();
+
+            var partesHorarioNuevo = horario.Split('-');
+            var horaInicioNueva = TimeSpan.Parse(partesHorarioNuevo[0]);
+            var horaFinNueva = TimeSpan.Parse(partesHorarioNuevo[1]);
+
+            foreach (var reserva in reservasExistentes)
+            {
+                var partesHorarioExistente = reserva.Horario.Split('-');
+                var horaInicioExistente = TimeSpan.Parse(partesHorarioExistente[0]);
+                var horaFinExistente = TimeSpan.Parse(partesHorarioExistente[1]);
+
+                // Verificar solapamiento
+                bool hayConflicto = !(horaFinNueva <= horaInicioExistente || horaInicioNueva >= horaFinExistente);
+
+                if (hayConflicto)
+                {
+                    return new ValidacionResult(false, string.Format("El horario {0} se solapa con una reserva existente ({1}) del usuario {2} en estado {3}",
+                        horario, reserva.Horario, reserva.Usuario.Nombre, reserva.Estado));
+                }
+            }
+
+            return new ValidacionResult(true, "No hay conflictos de horario");
+        }
+
+        // NUEVA FUNCIÓN: Validar que el usuario no tenga otra reserva en el mismo horario
+        private ValidacionResult ValidarConflictoUsuario(int usuarioId, DateTime fecha, string horario)
+        {
+            DateTime fechaInicio = fecha.Date;
+            DateTime fechaFin = fechaInicio.AddDays(1);
+
+            var reservasUsuario = db.Reservas
+                .Where(r => r.UsuarioId == usuarioId &&
+                           r.Fecha >= fechaInicio &&
+                           r.Fecha < fechaFin &&
+                           r.Estado != EstadoReserva.Rechazada)
+                .Include(r => r.Espacio)
+                .ToList();
+
+            var partesHorarioNuevo = horario.Split('-');
+            var horaInicioNueva = TimeSpan.Parse(partesHorarioNuevo[0]);
+            var horaFinNueva = TimeSpan.Parse(partesHorarioNuevo[1]);
+
+            foreach (var reserva in reservasUsuario)
+            {
+                var partesHorarioExistente = reserva.Horario.Split('-');
+                var horaInicioExistente = TimeSpan.Parse(partesHorarioExistente[0]);
+                var horaFinExistente = TimeSpan.Parse(partesHorarioExistente[1]);
+
+                // Verificar solapamiento
+                bool hayConflicto = !(horaFinNueva <= horaInicioExistente || horaInicioNueva >= horaFinExistente);
+
+                if (hayConflicto)
+                {
+                    return new ValidacionResult(false, string.Format("Ya tiene una reserva en el horario {0} para el espacio {1} en estado {2}. No puede tener dos reservas simultáneas.",
+                        reserva.Horario, reserva.Espacio.Nombre, reserva.Estado));
+                }
+            }
+
+            return new ValidacionResult(true, "No hay conflictos de usuario");
         }
 
         private dynamic ValidateJwtToken()
@@ -102,7 +250,7 @@ namespace GestorReservas.Controllers
 
                 var token = authHeader.Parameter;
                 var tokenHandler = new JwtSecurityTokenHandler();
-                var key = Encoding.ASCII.GetBytes(secretKey);
+                var key = Encoding.ASCII.GetBytes(AppConfig.JwtSecretKey); // ← USAR CONFIG
 
                 tokenHandler.ValidateToken(token, new TokenValidationParameters
                 {
@@ -150,13 +298,15 @@ namespace GestorReservas.Controllers
             db.SaveChanges();
             return Ok(reserva);
         }
+
         // Agregar este método al ReservaController existente
         [HttpGet]
         [Route("api/Reserva/disponibilidad/{espacioId}")]
         public IHttpActionResult ConsultarDisponibilidad(int espacioId, string fecha, string horario)
         {
             // Convertir fecha string a DateTime
-            if (!DateTime.TryParse(fecha, out DateTime fechaConsulta))
+            DateTime fechaConsulta;
+            if (!DateTime.TryParse(fecha, out fechaConsulta))
                 return BadRequest("Formato de fecha inválido");
 
             // Buscar reservas que coincidan con espacio, fecha y horario
@@ -185,7 +335,8 @@ namespace GestorReservas.Controllers
         [Route("api/Reserva/espacios-disponibles")]
         public IHttpActionResult ConsultarEspaciosDisponibles(string fecha, string horario)
         {
-            if (!DateTime.TryParse(fecha, out DateTime fechaConsulta))
+            DateTime fechaConsulta;
+            if (!DateTime.TryParse(fecha, out fechaConsulta))
                 return BadRequest("Formato de fecha inválido");
 
             // Espacios ocupados en esa fecha/horario
@@ -204,6 +355,7 @@ namespace GestorReservas.Controllers
 
             return Ok(espaciosDisponibles);
         }
+
         // Aprobar reserva
         [HttpPut]
         [Route("api/Reserva/{id}/aprobar")]
@@ -263,6 +415,7 @@ namespace GestorReservas.Controllers
 
             return Ok(reservasPendientes);
         }
+
         // Consultar historial de reservas por usuario
         [HttpGet]
         [Route("api/Reserva/historial/usuario/{usuarioId}")]
@@ -274,12 +427,14 @@ namespace GestorReservas.Controllers
                 .Include(r => r.Espacio);
 
             // Filtros opcionales de fecha
-            if (!string.IsNullOrEmpty(fechaInicio) && DateTime.TryParse(fechaInicio, out DateTime inicio))
+            DateTime inicio;
+            if (!string.IsNullOrEmpty(fechaInicio) && DateTime.TryParse(fechaInicio, out inicio))
             {
                 query = query.Where(r => r.Fecha >= inicio);
             }
 
-            if (!string.IsNullOrEmpty(fechaFin) && DateTime.TryParse(fechaFin, out DateTime fin))
+            DateTime fin;
+            if (!string.IsNullOrEmpty(fechaFin) && DateTime.TryParse(fechaFin, out fin))
             {
                 DateTime finDelDia = fin.Date.AddDays(1);
                 query = query.Where(r => r.Fecha < finDelDia);
@@ -310,12 +465,14 @@ namespace GestorReservas.Controllers
                 .Include(r => r.Espacio);
 
             // Filtros opcionales de fecha
-            if (!string.IsNullOrEmpty(fechaInicio) && DateTime.TryParse(fechaInicio, out DateTime inicio))
+            DateTime inicio;
+            if (!string.IsNullOrEmpty(fechaInicio) && DateTime.TryParse(fechaInicio, out inicio))
             {
                 query = query.Where(r => r.Fecha >= inicio);
             }
 
-            if (!string.IsNullOrEmpty(fechaFin) && DateTime.TryParse(fechaFin, out DateTime fin))
+            DateTime fin;
+            if (!string.IsNullOrEmpty(fechaFin) && DateTime.TryParse(fechaFin, out fin))
             {
                 DateTime finDelDia = fin.Date.AddDays(1);
                 query = query.Where(r => r.Fecha < finDelDia);
@@ -359,12 +516,14 @@ namespace GestorReservas.Controllers
                 query = query.Where(r => (int)r.Estado == estado.Value);
 
             // Filtros de fecha
-            if (!string.IsNullOrEmpty(fechaInicio) && DateTime.TryParse(fechaInicio, out DateTime inicio))
+            DateTime inicio;
+            if (!string.IsNullOrEmpty(fechaInicio) && DateTime.TryParse(fechaInicio, out inicio))
             {
                 query = query.Where(r => r.Fecha >= inicio);
             }
 
-            if (!string.IsNullOrEmpty(fechaFin) && DateTime.TryParse(fechaFin, out DateTime fin))
+            DateTime fin;
+            if (!string.IsNullOrEmpty(fechaFin) && DateTime.TryParse(fechaFin, out fin))
             {
                 DateTime finDelDia = fin.Date.AddDays(1);
                 query = query.Where(r => r.Fecha < finDelDia);
@@ -389,6 +548,15 @@ namespace GestorReservas.Controllers
                 },
                 Reservas = historial
             });
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                db.Dispose();
+            }
+            base.Dispose(disposing);
         }
     }
 }

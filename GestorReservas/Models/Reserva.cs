@@ -32,5 +32,7 @@ namespace GestorReservas.Models
         public string Horario { get; set; }
         [Required]
         public EstadoReserva Estado { get; set; }
+
+        public string Descripcion { get; set; }
     }
 }
