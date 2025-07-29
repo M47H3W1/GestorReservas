@@ -92,6 +92,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="App_Start\WebApiConfig.cs" />
+    <Compile Include="Controllers\EspacioController.cs" />
     <Compile Include="Controllers\ReservaController.cs" />
     <Compile Include="Controllers\UsuarioController.cs" />
     <Compile Include="DAL\GestorReserva.cs" />
