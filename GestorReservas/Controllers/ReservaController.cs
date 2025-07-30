@@ -1560,6 +1560,342 @@ namespace GestorReservas.Controllers
             });
         }
 
+        // NUEVO: Consultas agrupadas por período - ACCESO PÚBLICO
+        [HttpGet]
+        [Route("api/Reserva/reportes/por-periodo")]
+        public IHttpActionResult ConsultarReservasPorPeriodo(string periodo = "dia", int? espacioId = null,
+            string fechaInicio = null, string fechaFin = null)
+        {
+            // Validar JWT token
+            var userInfo = ValidateJwtToken();
+            if (userInfo == null)
+                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
+
+            // TODOS los usuarios pueden hacer esta consulta
+            // No hay restricción de rol aquí
+
+            // Validar período
+            if (periodo != "dia" && periodo != "semana" && periodo != "mes")
+                return BadRequest("Período inválido. Use: 'dia', 'semana' o 'mes'");
+
+            var query = db.Reservas
+                .Include(r => r.Usuario)
+                .Include(r => r.Espacio)
+                .AsQueryable();
+
+            // Filtro por espacio (si se especifica)
+            if (espacioId.HasValue)
+            {
+                var espacio = db.Espacios.Find(espacioId.Value);
+                if (espacio == null)
+                    return BadRequest($"No existe un espacio con ID {espacioId.Value}");
+                query = query.Where(r => r.EspacioId == espacioId.Value);
+            }
+
+            // Aplicar filtros de fecha
+            DateTime fechaInicioFiltro = DateTime.Now.AddMonths(-1); // Por defecto último mes
+            DateTime fechaFinFiltro = DateTime.Now;
+
+            if (!string.IsNullOrEmpty(fechaInicio))
+            {
+                if (!DateTime.TryParse(fechaInicio, out fechaInicioFiltro))
+                    return BadRequest("Formato de fecha de inicio inválido. Use formato YYYY-MM-DD");
+            }
+
+            if (!string.IsNullOrEmpty(fechaFin))
+            {
+                if (!DateTime.TryParse(fechaFin, out fechaFinFiltro))
+                    return BadRequest("Formato de fecha de fin inválido. Use formato YYYY-MM-DD");
+            }
+
+            query = query.Where(r => r.Fecha >= fechaInicioFiltro && r.Fecha <= fechaFinFiltro);
+
+            var reservas = query.ToList();
+
+            // Agrupar según el período solicitado
+            var resultadosAgrupados = new List<dynamic>();
+
+            if (periodo == "dia")
+            {
+                var gruposPorDia = reservas
+                    .GroupBy(r => r.Fecha.Date)
+                    .OrderBy(g => g.Key)
+                    .Select(g => new
+                    {
+                        Fecha = g.Key,
+                        TotalReservas = g.Count(),
+                        Estados = g.GroupBy(r => r.Estado).Select(e => new
+                        {
+                            Estado = e.Key.ToString(),
+                            Cantidad = e.Count()
+                        }),
+                        Espacios = g.GroupBy(r => r.Espacio.Nombre).Select(e => new
+                        {
+                            Espacio = e.Key,
+                            Cantidad = e.Count()
+                        }),
+                        Reservas = g.Select(r => new
+                        {
+                            Id = r.Id,
+                            Usuario = r.Usuario.Nombre,
+                            Espacio = r.Espacio.Nombre,
+                            Horario = r.Horario,
+                            Estado = r.Estado.ToString()
+                        })
+                    });
+                resultadosAgrupados = gruposPorDia.Cast<dynamic>().ToList();
+            }
+            else if (periodo == "semana")
+            {
+                var gruposPorSemana = reservas
+                    .GroupBy(r => new
+                    {
+                        Año = r.Fecha.Year,
+                        Semana = GetWeekOfYear(r.Fecha)
+                    })
+                    .OrderBy(g => g.Key.Año).ThenBy(g => g.Key.Semana)
+                    .Select(g => new
+                    {
+                        Año = g.Key.Año,
+                        Semana = g.Key.Semana,
+                        FechaInicio = g.Min(r => r.Fecha).Date,
+                        FechaFin = g.Max(r => r.Fecha).Date,
+                        TotalReservas = g.Count(),
+                        Estados = g.GroupBy(r => r.Estado).Select(e => new
+                        {
+                            Estado = e.Key.ToString(),
+                            Cantidad = e.Count()
+                        }),
+                        Espacios = g.GroupBy(r => r.Espacio.Nombre).Select(e => new
+                        {
+                            Espacio = e.Key,
+                            Cantidad = e.Count()
+                        }),
+                        ReservasPorDia = g.GroupBy(r => r.Fecha.Date).Select(d => new
+                        {
+                            Fecha = d.Key,
+                            Cantidad = d.Count()
+                        })
+                    });
+                resultadosAgrupados = gruposPorSemana.Cast<dynamic>().ToList();
+            }
+            else if (periodo == "mes")
+            {
+                var gruposPorMes = reservas
+                    .GroupBy(r => new
+                    {
+                        Año = r.Fecha.Year,
+                        Mes = r.Fecha.Month
+                    })
+                    .OrderBy(g => g.Key.Año).ThenBy(g => g.Key.Mes)
+                    .Select(g => new
+                    {
+                        Año = g.Key.Año,
+                        Mes = g.Key.Mes,
+                        NombreMes = new DateTime(g.Key.Año, g.Key.Mes, 1).ToString("MMMM yyyy"),
+                        TotalReservas = g.Count(),
+                        Estados = g.GroupBy(r => r.Estado).Select(e => new
+                        {
+                            Estado = e.Key.ToString(),
+                            Cantidad = e.Count()
+                        }),
+                        Espacios = g.GroupBy(r => r.Espacio.Nombre).Select(e => new
+                        {
+                            Espacio = e.Key,
+                            Cantidad = e.Count()
+                        }),
+                        ReservasPorSemana = g.GroupBy(r => GetWeekOfYear(r.Fecha)).Select(s => new
+                        {
+                            Semana = s.Key,
+                            Cantidad = s.Count()
+                        })
+                    });
+                resultadosAgrupados = gruposPorMes.Cast<dynamic>().ToList();
+            }
+
+            return Ok(new
+            {
+                TipoConsulta = $"Agrupación por {periodo}",
+                Periodo = periodo,
+                FechaConsulta = DateTime.Now,
+                Filtros = new
+                {
+                    EspacioId = espacioId,
+                    FechaInicio = fechaInicioFiltro.Date,
+                    FechaFin = fechaFinFiltro.Date
+                },
+                ConsultadoPor = new
+                {
+                    Id = userInfo.Id,
+                    Email = userInfo.Email,
+                    Rol = userInfo.Role
+                },
+                TotalReservasEnPeriodo = reservas.Count,
+                TotalGrupos = resultadosAgrupados.Count,
+                ResultadosAgrupados = resultadosAgrupados
+            });
+        }
+
+        // NUEVO: Consultas filtradas - SOLO ADMIN/COORDINADOR
+        [HttpGet]
+        [Route("api/Reserva/reportes/filtrado-avanzado")]
+        public IHttpActionResult ConsultarReservasFiltradoAvanzado(int? usuarioId = null, string tipoEspacio = null,
+            int? estado = null, string fechaInicio = null, string fechaFin = null)
+        {
+            // Validar JWT token
+            var userInfo = ValidateJwtToken();
+            if (userInfo == null)
+                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
+
+            // SOLO administradores y coordinadores pueden hacer consultas filtradas avanzadas
+            if (userInfo.Role != "Administrador" && userInfo.Role != "Coordinador")
+                return Content(System.Net.HttpStatusCode.Forbidden,
+                    "Solo administradores y coordinadores pueden realizar consultas filtradas avanzadas");
+
+            var query = db.Reservas
+                .Include(r => r.Usuario)
+                .Include(r => r.Espacio)
+                .AsQueryable();
+
+            // Filtro por usuario
+            if (usuarioId.HasValue)
+            {
+                var usuario = db.Usuarios.Find(usuarioId.Value);
+                if (usuario == null)
+                    return BadRequest($"No existe un usuario con ID {usuarioId.Value}");
+                query = query.Where(r => r.UsuarioId == usuarioId.Value);
+            }
+
+            // Filtro por tipo de espacio
+            if (!string.IsNullOrEmpty(tipoEspacio))
+            {
+                TipoEspacio tipoEnum;
+                if (!Enum.TryParse(tipoEspacio, true, out tipoEnum))
+                    return BadRequest($"Tipo de espacio inválido: {tipoEspacio}. Tipos válidos: Aula, Laboratorio, Auditorio");
+                query = query.Where(r => r.Espacio.Tipo == tipoEnum);
+            }
+
+            // Filtro por estado
+            if (estado.HasValue)
+            {
+                if (!Enum.IsDefined(typeof(EstadoReserva), estado.Value))
+                    return BadRequest($"Estado de reserva inválido: {estado.Value}. Estados válidos: 0=Pendiente, 1=Aprobada, 2=Rechazada");
+                query = query.Where(r => (int)r.Estado == estado.Value);
+            }
+
+            // Aplicar filtros de fecha
+            if (!string.IsNullOrEmpty(fechaInicio))
+            {
+                DateTime inicio;
+                if (!DateTime.TryParse(fechaInicio, out inicio))
+                    return BadRequest("Formato de fecha de inicio inválido. Use formato YYYY-MM-DD");
+                query = query.Where(r => r.Fecha >= inicio);
+            }
+
+            if (!string.IsNullOrEmpty(fechaFin))
+            {
+                DateTime fin;
+                if (!DateTime.TryParse(fechaFin, out fin))
+                    return BadRequest("Formato de fecha de fin inválido. Use formato YYYY-MM-DD");
+
+                if (!string.IsNullOrEmpty(fechaInicio))
+                {
+                    DateTime inicio;
+                    DateTime.TryParse(fechaInicio, out inicio);
+                    if (inicio.Date > fin.Date)
+                        return BadRequest("La fecha de inicio no puede ser mayor que la fecha de fin");
+                }
+
+                DateTime finDelDia = fin.Date.AddDays(1);
+                query = query.Where(r => r.Fecha < finDelDia);
+            }
+
+            var reservas = query
+                .OrderByDescending(r => r.Fecha)
+                .ThenByDescending(r => r.Id)
+                .ToList();
+
+            // Generar estadísticas
+            var estadisticas = new
+            {
+                TotalReservas = reservas.Count,
+                PorEstado = reservas.GroupBy(r => r.Estado).Select(g => new
+                {
+                    Estado = g.Key.ToString(),
+                    Cantidad = g.Count(),
+                    Porcentaje = Math.Round((double)g.Count() / reservas.Count * 100, 2)
+                }),
+                PorTipoEspacio = reservas.GroupBy(r => r.Espacio.Tipo).Select(g => new
+                {
+                    Tipo = g.Key.ToString(),
+                    Cantidad = g.Count(),
+                    Porcentaje = Math.Round((double)g.Count() / reservas.Count * 100, 2)
+                }),
+                PorUsuario = reservas.GroupBy(r => r.Usuario.Nombre).Select(g => new
+                {
+                    Usuario = g.Key,
+                    Cantidad = g.Count(),
+                    Porcentaje = Math.Round((double)g.Count() / reservas.Count * 100, 2)
+                }).OrderByDescending(x => x.Cantidad).Take(10) // Top 10 usuarios
+            };
+
+            return Ok(new
+            {
+                TipoConsulta = "Filtrado Avanzado",
+                FechaConsulta = DateTime.Now,
+                Filtros = new
+                {
+                    UsuarioId = usuarioId,
+                    TipoEspacio = tipoEspacio,
+                    Estado = estado,
+                    EstadoTexto = estado.HasValue ? ((EstadoReserva)estado.Value).ToString() : null,
+                    FechaInicio = fechaInicio,
+                    FechaFin = fechaFin
+                },
+                ConsultadoPor = new
+                {
+                    Id = userInfo.Id,
+                    Email = userInfo.Email,
+                    Rol = userInfo.Role
+                },
+                Estadisticas = estadisticas,
+                Reservas = reservas.Select(r => new
+                {
+                    Id = r.Id,
+                    UsuarioId = r.UsuarioId,
+                    Usuario = new
+                    {
+                        Id = r.Usuario.Id,
+                        Nombre = r.Usuario.Nombre,
+                        Email = r.Usuario.Email,
+                        Rol = r.Usuario.Rol.ToString()
+                    },
+                    EspacioId = r.EspacioId,
+                    Espacio = new
+                    {
+                        Id = r.Espacio.Id,
+                        Nombre = r.Espacio.Nombre,
+                        Tipo = r.Espacio.Tipo.ToString(),
+                        Ubicacion = r.Espacio.Ubicacion
+                    },
+                    Fecha = r.Fecha,
+                    Horario = r.Horario,
+                    Estado = r.Estado.ToString()
+                })
+            });
+        }
+
+        // Función auxiliar para obtener número de semana
+        private int GetWeekOfYear(DateTime date)
+        {
+            var culture = new CultureInfo("es-ES");
+            var calendar = culture.Calendar;
+            var calendarWeekRule = culture.DateTimeFormat.CalendarWeekRule;
+            var firstDayOfWeek = culture.DateTimeFormat.FirstDayOfWeek;
+
+            return calendar.GetWeekOfYear(date, calendarWeekRule, firstDayOfWeek);
+        }
+
         protected override void Dispose(bool disposing)
         {
             if (disposing)
