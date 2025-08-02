@@ -7,16 +7,22 @@ using System.Data.Entity;
 using System.IdentityModel.Tokens.Jwt;
 using System.Text;
 using Microsoft.IdentityModel.Tokens;
-using System.Globalization;
 using System.Collections.Generic;
-using GestorReservas.Utils; // ← AGREGAR ESTA LÍNEA
+using GestorReservas.Utils;
 
 namespace GestorReservas.Controllers
 {
+    // Clase para el resultado de validación JWT
+    public class JwtUserInfo
+    {
+        public int Id { get; set; }
+        public string Email { get; set; }
+        public string Role { get; set; }
+    }
+
     public class ReservaController : ApiController
     {
         private GestorReserva db = new GestorReserva();
-        // ← ELIMINAR: private readonly string secretKey = "...";
 
         // Constructor para validar configuración
         public ReservaController()
@@ -240,7 +246,7 @@ namespace GestorReservas.Controllers
             return new ValidacionResult(true, "No hay conflictos de usuario");
         }
 
-        private dynamic ValidateJwtToken()
+        private JwtUserInfo ValidateJwtToken()
         {
             try
             {
@@ -250,7 +256,7 @@ namespace GestorReservas.Controllers
 
                 var token = authHeader.Parameter;
                 var tokenHandler = new JwtSecurityTokenHandler();
-                var key = Encoding.ASCII.GetBytes(AppConfig.JwtSecretKey); // ← USAR CONFIG
+                var key = Encoding.ASCII.GetBytes(AppConfig.JwtSecretKey);
 
                 tokenHandler.ValidateToken(token, new TokenValidationParameters
                 {
@@ -266,7 +272,7 @@ namespace GestorReservas.Controllers
                 var userEmail = jwtToken.Claims.First(x => x.Type == "email").Value;
                 var userRole = jwtToken.Claims.First(x => x.Type == "role").Value;
 
-                return new { Id = userId, Email = userEmail, Role = userRole };
+                return new JwtUserInfo { Id = userId, Email = userEmail, Role = userRole };
             }
             catch
             {
@@ -311,17 +317,30 @@ namespace GestorReservas.Controllers
             }
             else if (userInfo.Role == "Coordinador")
             {
-                // Coordinador puede editar cualquier reserva y cambiar usuario
-                // Pero mantiene el estado actual a menos que sea admin
-                reservaDto.Estado = reservaExistente.Estado;
+                // NUEVA LÓGICA: Coordinador solo puede gestionar reservas de su departamento
+                var coordinador = db.Usuarios.Include(u => u.Departamento).FirstOrDefault(u => u.Id == userInfo.Id);
+                if (coordinador?.Departamento == null)
+                    return Content(System.Net.HttpStatusCode.Forbidden, "Coordinador no tiene departamento asignado");
+
+                var usuarioReserva = db.Usuarios.Include(u => u.Departamento).FirstOrDefault(u => u.Id == reservaExistente.UsuarioId);
+                if (usuarioReserva?.DepartamentoId != coordinador.DepartamentoId)
+                    return Content(System.Net.HttpStatusCode.Forbidden, "Solo puede gestionar reservas de profesores de su departamento");
+
+                // Si cambia el usuario, validar que el nuevo usuario sea de su departamento
+                if (reservaDto.UsuarioId != reservaExistente.UsuarioId)
+                {
+                    var nuevoUsuario = db.Usuarios.Include(u => u.Departamento).FirstOrDefault(u => u.Id == reservaDto.UsuarioId);
+                    if (nuevoUsuario?.DepartamentoId != coordinador.DepartamentoId)
+                        return BadRequest("Solo puede asignar reservas a profesores de su departamento");
+                }
             }
             else if (userInfo.Role == "Administrador")
             {
-                // Administrador puede editar todo
+                // Administrador puede editar cualquier reserva
             }
             else
             {
-                return Content(System.Net.HttpStatusCode.Unauthorized, "No tiene permisos para actualizar reservas");
+                return Content(System.Net.HttpStatusCode.Unauthorized, "No tiene permisos para editar reservas");
             }
 
             // Validar que el nuevo usuario existe (si se cambió)
@@ -527,13 +546,19 @@ namespace GestorReservas.Controllers
             // Validaciones de permisos según rol
             if (userInfo.Role == "Profesor")
             {
-                // Profesor solo puede eliminar sus propias reservas
                 if (reserva.UsuarioId != userInfo.Id)
                     return Content(System.Net.HttpStatusCode.Unauthorized, "Los profesores solo pueden eliminar sus propias reservas");
             }
             else if (userInfo.Role == "Coordinador")
             {
-                // Coordinador puede eliminar cualquier reserva
+                // NUEVA LÓGICA: Coordinador solo puede eliminar reservas de su departamento
+                var coordinador = db.Usuarios.Include(u => u.Departamento).FirstOrDefault(u => u.Id == userInfo.Id);
+                if (coordinador?.Departamento == null)
+                    return Content(System.Net.HttpStatusCode.Forbidden, "Coordinador no tiene departamento asignado");
+
+                var usuarioReserva = db.Usuarios.Include(u => u.Departamento).FirstOrDefault(u => u.Id == reserva.UsuarioId);
+                if (usuarioReserva?.DepartamentoId != coordinador.DepartamentoId)
+                    return Content(System.Net.HttpStatusCode.Forbidden, "Solo puede eliminar reservas de profesores de su departamento");
             }
             else if (userInfo.Role == "Administrador")
             {
@@ -599,7 +624,7 @@ namespace GestorReservas.Controllers
             return Ok(respuestaEliminacion);
         }
 
-        // Agregar este método al ReservaController existente
+        // Consultar disponibilidad de espacio
         [HttpGet]
         [Route("api/Reserva/disponibilidad/{espacioId}")]
         public IHttpActionResult ConsultarDisponibilidad(int espacioId, string fecha = null, string horario = null)
@@ -807,13 +832,29 @@ namespace GestorReservas.Controllers
             if (userInfo == null)
                 return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
 
-            // Solo administradores pueden aprobar reservas
-            if (userInfo.Role != "Administrador")
-                return Content(System.Net.HttpStatusCode.Forbidden, "Solo los administradores pueden aprobar reservas");
-
             var reserva = db.Reservas.Find(id);
             if (reserva == null)
                 return NotFound();
+
+            // NUEVA LÓGICA: Solo administradores y coordinadores del departamento pueden aprobar
+            if (userInfo.Role == "Administrador")
+            {
+                // Administradores pueden aprobar cualquier reserva
+            }
+            else if (userInfo.Role == "Coordinador")
+            {
+                var coordinador = db.Usuarios.Include(u => u.Departamento).FirstOrDefault(u => u.Id == userInfo.Id);
+                if (coordinador?.Departamento == null)
+                    return Content(System.Net.HttpStatusCode.Forbidden, "Coordinador no tiene departamento asignado");
+
+                var usuarioReserva = db.Usuarios.Include(u => u.Departamento).FirstOrDefault(u => u.Id == reserva.UsuarioId);
+                if (usuarioReserva?.DepartamentoId != coordinador.DepartamentoId)
+                    return Content(System.Net.HttpStatusCode.Forbidden, "Solo puede aprobar reservas de profesores de su departamento");
+            }
+            else
+            {
+                return Content(System.Net.HttpStatusCode.Forbidden, "Solo administradores y coordinadores pueden aprobar reservas");
+            }
 
             if (reserva.Estado != EstadoReserva.Pendiente)
                 return BadRequest("Solo se pueden aprobar reservas pendientes");
@@ -846,13 +887,29 @@ namespace GestorReservas.Controllers
             if (userInfo == null)
                 return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
 
-            // Solo administradores pueden rechazar reservas
-            if (userInfo.Role != "Administrador")
-                return Content(System.Net.HttpStatusCode.Forbidden, "Solo los administradores pueden rechazar reservas");
-
             var reserva = db.Reservas.Find(id);
             if (reserva == null)
                 return NotFound();
+
+            // NUEVA LÓGICA: Solo administradores y coordinadores del departamento pueden rechazar
+            if (userInfo.Role == "Administrador")
+            {
+                // Administradores pueden rechazar cualquier reserva
+            }
+            else if (userInfo.Role == "Coordinador")
+            {
+                var coordinador = db.Usuarios.Include(u => u.Departamento).FirstOrDefault(u => u.Id == userInfo.Id);
+                if (coordinador?.Departamento == null)
+                    return Content(System.Net.HttpStatusCode.Forbidden, "Coordinador no tiene departamento asignado");
+
+                var usuarioReserva = db.Usuarios.Include(u => u.Departamento).FirstOrDefault(u => u.Id == reserva.UsuarioId);
+                if (usuarioReserva?.DepartamentoId != coordinador.DepartamentoId)
+                    return Content(System.Net.HttpStatusCode.Forbidden, "Solo puede rechazar reservas de profesores de su departamento");
+            }
+            else
+            {
+                return Content(System.Net.HttpStatusCode.Forbidden, "Solo administradores y coordinadores pueden rechazar reservas");
+            }
 
             if (reserva.Estado != EstadoReserva.Pendiente)
                 return BadRequest("Solo se pueden rechazar reservas pendientes");
@@ -885,14 +942,28 @@ namespace GestorReservas.Controllers
             if (userInfo == null)
                 return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
 
-            // Solo administradores pueden ver reservas pendientes
-            if (userInfo.Role != "Administrador")
-                return Content(System.Net.HttpStatusCode.Forbidden, "Solo los administradores pueden consultar reservas pendientes");
-
-            var reservasPendientes = db.Reservas
+            var query = db.Reservas
                 .Where(r => r.Estado == EstadoReserva.Pendiente)
                 .Include(r => r.Usuario)
+                .Include(r => r.Usuario.Departamento)
                 .Include(r => r.Espacio)
+                .AsQueryable();
+
+            // NUEVA LÓGICA: Filtrar por departamento para coordinadores
+            if (userInfo.Role == "Coordinador")
+            {
+                var coordinador = db.Usuarios.Include(u => u.Departamento).FirstOrDefault(u => u.Id == userInfo.Id);
+                if (coordinador?.Departamento == null)
+                    return Content(System.Net.HttpStatusCode.Forbidden, "Coordinador no tiene departamento asignado");
+
+                query = query.Where(r => r.Usuario.DepartamentoId == coordinador.DepartamentoId);
+            }
+            else if (userInfo.Role != "Administrador")
+            {
+                return Content(System.Net.HttpStatusCode.Forbidden, "Solo administradores y coordinadores pueden consultar reservas pendientes");
+            }
+
+            var reservasPendientes = query
                 .OrderByDescending(r => r.Fecha)
                 .ThenByDescending(r => r.Id)
                 .ToList();
@@ -908,455 +979,6 @@ namespace GestorReservas.Controllers
                     Rol = userInfo.Role
                 },
                 ReservasPendientes = reservasPendientes
-            });
-        }
-
-        // Obtener reservas pendientes filtradas por fecha y/o horario
-        [HttpGet]
-        [Route("api/Reserva/pendientes/filtradas")]
-        public IHttpActionResult ObtenerReservasPendientesFiltradas(string fecha = null, string horario = null, int? espacioId = null)
-        {
-            // Validar JWT token
-            var userInfo = ValidateJwtToken();
-            if (userInfo == null)
-                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
-
-            // Solo administradores pueden ver reservas pendientes
-            if (userInfo.Role != "Administrador")
-                return Content(System.Net.HttpStatusCode.Forbidden, "Solo los administradores pueden consultar reservas pendientes");
-
-            var query = db.Reservas
-                .Where(r => r.Estado == EstadoReserva.Pendiente)
-                .Include(r => r.Usuario)
-                .Include(r => r.Espacio);
-
-            // Filtro por fecha
-            DateTime fechaConsulta;
-            if (!string.IsNullOrEmpty(fecha))
-            {
-                if (!DateTime.TryParse(fecha, out fechaConsulta))
-                    return BadRequest("Formato de fecha inválido. Use formato YYYY-MM-DD");
-
-                DateTime fechaInicio = fechaConsulta.Date;
-                DateTime fechaFin = fechaInicio.AddDays(1);
-                query = query.Where(r => r.Fecha >= fechaInicio && r.Fecha < fechaFin);
-            }
-
-            // Filtro por horario (validar solapamiento)
-            TimeSpan horaInicioFiltro = TimeSpan.Zero;
-            TimeSpan horaFinFiltro = TimeSpan.Zero;
-            bool validarHorario = false;
-
-            if (!string.IsNullOrEmpty(horario))
-            {
-                var validacionHorario = ValidarHorario(horario);
-                if (!validacionHorario.EsValido)
-                    return BadRequest(validacionHorario.Mensaje);
-
-                var partesHorario = horario.Split('-');
-                horaInicioFiltro = TimeSpan.Parse(partesHorario[0]);
-                horaFinFiltro = TimeSpan.Parse(partesHorario[1]);
-                validarHorario = true;
-            }
-
-            // Filtro por espacio
-            if (espacioId.HasValue)
-                query = query.Where(r => r.EspacioId == espacioId.Value);
-
-            var reservasPendientes = query
-                .OrderByDescending(r => r.Fecha)
-                .ThenBy(r => r.Horario)
-                .ThenByDescending(r => r.Id)
-                .ToList();
-
-            // Si hay filtro de horario, aplicar filtrado por solapamiento
-            if (validarHorario)
-            {
-                reservasPendientes = reservasPendientes.Where(reserva =>
-                {
-                    var partesHorarioReserva = reserva.Horario.Split('-');
-                    var horaInicioReserva = TimeSpan.Parse(partesHorarioReserva[0]);
-                    var horaFinReserva = TimeSpan.Parse(partesHorarioReserva[1]);
-
-                    // Verificar solapamiento
-                    bool hayConflicto = !(horaFinFiltro <= horaInicioReserva || horaInicioFiltro >= horaFinReserva);
-                    return hayConflicto;
-                }).ToList();
-            }
-
-            return Ok(new
-            {
-                TotalReservasPendientes = reservasPendientes.Count,
-                FechaConsulta = DateTime.Now,
-                Filtros = new
-                {
-                    Fecha = fecha,
-                    Horario = horario,
-                    EspacioId = espacioId
-                },
-                ConsultadoPor = new
-                {
-                    Id = userInfo.Id,
-                    Email = userInfo.Email,
-                    Rol = userInfo.Role
-                },
-                ReservasPendientes = reservasPendientes.Select(r => new
-                {
-                    Id = r.Id,
-                    UsuarioId = r.UsuarioId,
-                    Usuario = new
-                    {
-                        Id = r.Usuario.Id,
-                        Nombre = r.Usuario.Nombre,
-                        Email = r.Usuario.Email,
-                        Rol = r.Usuario.Rol.ToString()
-                    },
-                    EspacioId = r.EspacioId,
-                    Espacio = new
-                    {
-                        Id = r.Espacio.Id,
-                        Nombre = r.Espacio.Nombre,
-                        Tipo = r.Espacio.Tipo.ToString(),
-                        Ubicacion = r.Espacio.Ubicacion
-                    },
-                    Fecha = r.Fecha,
-                    Horario = r.Horario,
-                    Estado = r.Estado.ToString()
-                })
-            });
-        }
-
-        // Consultar historial de reservas por usuario
-        [HttpGet]
-        [Route("api/Reserva/historial/usuario/{usuarioId}")]
-        public IHttpActionResult ConsultarHistorialPorUsuario(int usuarioId, string fechaInicio = null, string fechaFin = null)
-        {
-            // Validar JWT token
-            var userInfo = ValidateJwtToken();
-            if (userInfo == null)
-                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
-
-            // Solo administradores pueden consultar historial
-            if (userInfo.Role != "Administrador")
-                return Content(System.Net.HttpStatusCode.Forbidden, "Solo los administradores pueden consultar historiales de reservas");
-
-            // Validar que el usuario existe
-            var usuario = db.Usuarios.Find(usuarioId);
-            if (usuario == null)
-                return BadRequest($"No existe un usuario con ID {usuarioId}");
-
-            var query = db.Reservas
-                .Where(r => r.UsuarioId == usuarioId)
-                .Include(r => r.Usuario)
-                .Include(r => r.Espacio);
-
-            // Validar y aplicar filtros de fecha
-            if (!string.IsNullOrEmpty(fechaInicio))
-            {
-                DateTime inicio;
-                if (!DateTime.TryParse(fechaInicio, out inicio))
-                    return BadRequest("Formato de fecha de inicio inválido. Use formato YYYY-MM-DD");
-
-                // Aplicar filtro si la fecha es válida
-                query = query.Where(r => r.Fecha >= inicio);
-            }
-
-            if (!string.IsNullOrEmpty(fechaFin))
-            {
-                DateTime fin;
-                if (!DateTime.TryParse(fechaFin, out fin))
-                    return BadRequest("Formato de fecha de fin inválido. Use formato YYYY-MM-DD");
-
-                // Validar que fecha inicio no sea mayor que fecha fin (solo si ambas están presentes)
-                if (!string.IsNullOrEmpty(fechaInicio))
-                {
-                    DateTime inicio;
-                    DateTime.TryParse(fechaInicio, out inicio); // Ya sabemos que es válida
-                    if (inicio.Date > fin.Date)
-                        return BadRequest("La fecha de inicio no puede ser mayor que la fecha de fin");
-                }
-
-                // Aplicar filtro si la fecha es válida
-                DateTime finDelDia = fin.Date.AddDays(1);
-                query = query.Where(r => r.Fecha < finDelDia);
-            }
-
-            var historialUsuario = query
-                .OrderByDescending(r => r.Fecha)
-                .ThenByDescending(r => r.Id)
-                .ToList();
-
-            return Ok(new
-            {
-                UsuarioId = usuarioId,
-                Usuario = new
-                {
-                    Id = usuario.Id,
-                    Nombre = usuario.Nombre,
-                    Email = usuario.Email,
-                    Rol = usuario.Rol.ToString()
-                },
-                TotalReservas = historialUsuario.Count,
-                FechaConsulta = DateTime.Now,
-                Filtros = new
-                {
-                    FechaInicio = fechaInicio,
-                    FechaFin = fechaFin
-                },
-                ConsultadoPor = new
-                {
-                    Id = userInfo.Id,
-                    Email = userInfo.Email,
-                    Rol = userInfo.Role
-                },
-                Reservas = historialUsuario.Select(r => new
-                {
-                    Id = r.Id,
-                    UsuarioId = r.UsuarioId,
-                    EspacioId = r.EspacioId,
-                    Espacio = new
-                    {
-                        Id = r.Espacio.Id,
-                        Nombre = r.Espacio.Nombre,
-                        Tipo = r.Espacio.Tipo.ToString(),
-                        Ubicacion = r.Espacio.Ubicacion
-                    },
-                    Fecha = r.Fecha,
-                    Horario = r.Horario,
-                    Estado = r.Estado.ToString()
-                })
-            });
-        }
-
-        // Consultar historial de reservas por espacio
-        [HttpGet]
-        [Route("api/Reserva/historial/espacio/{espacioId}")]
-        public IHttpActionResult ConsultarHistorialPorEspacio(int espacioId, string fechaInicio = null, string fechaFin = null)
-        {
-            // Validar JWT token
-            var userInfo = ValidateJwtToken();
-            if (userInfo == null)
-                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
-
-            // Solo administradores pueden consultar historial
-            if (userInfo.Role != "Administrador")
-                return Content(System.Net.HttpStatusCode.Forbidden, "Solo los administradores pueden consultar historiales de reservas");
-
-            // Validar que el espacio existe
-            var espacio = db.Espacios.Find(espacioId);
-            if (espacio == null)
-                return BadRequest($"No existe un espacio con ID {espacioId}");
-
-            var query = db.Reservas
-                .Where(r => r.EspacioId == espacioId)
-                .Include(r => r.Usuario)
-                .Include(r => r.Espacio);
-
-            // Validar y aplicar filtros de fecha
-            if (!string.IsNullOrEmpty(fechaInicio))
-            {
-                DateTime inicio;
-                if (!DateTime.TryParse(fechaInicio, out inicio))
-                    return BadRequest("Formato de fecha de inicio inválido. Use formato YYYY-MM-DD");
-
-                // Aplicar filtro si la fecha es válida
-                query = query.Where(r => r.Fecha >= inicio);
-            }
-
-            if (!string.IsNullOrEmpty(fechaFin))
-            {
-                DateTime fin;
-                if (!DateTime.TryParse(fechaFin, out fin))
-                    return BadRequest("Formato de fecha de fin inválido. Use formato YYYY-MM-DD");
-
-                // Validar que fecha inicio no sea mayor que fecha fin (solo si ambas están presentes)
-                if (!string.IsNullOrEmpty(fechaInicio))
-                {
-                    DateTime inicio;
-                    DateTime.TryParse(fechaInicio, out inicio); // Ya sabemos que es válida
-                    if (inicio.Date > fin.Date)
-                        return BadRequest("La fecha de inicio no puede ser mayor que la fecha de fin");
-                }
-
-                // Aplicar filtro si la fecha es válida
-                DateTime finDelDia = fin.Date.AddDays(1);
-                query = query.Where(r => r.Fecha < finDelDia);
-            }
-
-            var historialEspacio = query
-                .OrderByDescending(r => r.Fecha)
-                .ThenByDescending(r => r.Id)
-                .ToList();
-
-            return Ok(new
-            {
-                EspacioId = espacioId,
-                Espacio = new
-                {
-                    Id = espacio.Id,
-                    Nombre = espacio.Nombre,
-                    Tipo = espacio.Tipo.ToString(),
-                    Capacidad = espacio.Capacidad,
-                    Ubicacion = espacio.Ubicacion,
-                    Descripcion = espacio.Descripcion,
-                    Disponible = espacio.Disponible
-                },
-                TotalReservas = historialEspacio.Count,
-                FechaConsulta = DateTime.Now,
-                Filtros = new
-                {
-                    FechaInicio = fechaInicio,
-                    FechaFin = fechaFin
-                },
-                ConsultadoPor = new
-                {
-                    Id = userInfo.Id,
-                    Email = userInfo.Email,
-                    Rol = userInfo.Role
-                },
-                Reservas = historialEspacio.Select(r => new
-                {
-                    Id = r.Id,
-                    UsuarioId = r.UsuarioId,
-                    Usuario = new
-                    {
-                        Id = r.Usuario.Id,
-                        Nombre = r.Usuario.Nombre,
-                        Email = r.Usuario.Email,
-                        Rol = r.Usuario.Rol.ToString()
-                    },
-                    EspacioId = r.EspacioId,
-                    Fecha = r.Fecha,
-                    Horario = r.Horario,
-                    Estado = r.Estado.ToString()
-                })
-            });
-        }
-
-        // Consultar historial completo con filtros múltiples
-        [HttpGet]
-        [Route("api/Reserva/historial")]
-        public IHttpActionResult ConsultarHistorialCompleto(int? usuarioId = null, int? espacioId = null,
-            string fechaInicio = null, string fechaFin = null, int? estado = null)
-        {
-            // Validar JWT token
-            var userInfo = ValidateJwtToken();
-            if (userInfo == null)
-                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
-
-            // Solo administradores pueden consultar historial completo
-            if (userInfo.Role != "Administrador")
-                return Content(System.Net.HttpStatusCode.Forbidden, "Solo los administradores pueden consultar historiales completos de reservas");
-
-            var query = db.Reservas
-                .Include(r => r.Usuario)
-                .Include(r => r.Espacio)
-                .AsQueryable();
-
-            // Filtro por usuario
-            if (usuarioId.HasValue)
-            {
-                var usuario = db.Usuarios.Find(usuarioId.Value);
-                if (usuario == null)
-                    return BadRequest($"No existe un usuario con ID {usuarioId.Value}");
-                query = query.Where(r => r.UsuarioId == usuarioId.Value);
-            }
-
-            // Filtro por espacio
-            if (espacioId.HasValue)
-            {
-                var espacio = db.Espacios.Find(espacioId.Value);
-                if (espacio == null)
-                    return BadRequest($"No existe un espacio con ID {espacioId.Value}");
-                query = query.Where(r => r.EspacioId == espacioId.Value);
-            }
-
-            // Filtro por estado
-            if (estado.HasValue)
-            {
-                if (!Enum.IsDefined(typeof(EstadoReserva), estado.Value))
-                    return BadRequest($"Estado de reserva inválido: {estado.Value}. Estados válidos: 0=Pendiente, 1=Aprobada, 2=Rechazada");
-                query = query.Where(r => (int)r.Estado == estado.Value);
-            }
-
-            // Validar y aplicar filtros de fecha
-            if (!string.IsNullOrEmpty(fechaInicio))
-            {
-                DateTime inicio;
-                if (!DateTime.TryParse(fechaInicio, out inicio))
-                    return BadRequest("Formato de fecha de inicio inválido. Use formato YYYY-MM-DD");
-
-                // Aplicar filtro si la fecha es válida
-                query = query.Where(r => r.Fecha >= inicio);
-            }
-
-            if (!string.IsNullOrEmpty(fechaFin))
-            {
-                DateTime fin;
-                if (!DateTime.TryParse(fechaFin, out fin))
-                    return BadRequest("Formato de fecha de fin inválido. Use formato YYYY-MM-DD");
-
-                // Validar que fecha inicio no sea mayor que fecha fin (solo si ambas están presentes)
-                if (!string.IsNullOrEmpty(fechaInicio))
-                {
-                    DateTime inicio;
-                    DateTime.TryParse(fechaInicio, out inicio); // Ya sabemos que es válida
-                    if (inicio.Date > fin.Date)
-                        return BadRequest("La fecha de inicio no puede ser mayor que la fecha de fin");
-                }
-
-                // Aplicar filtro si la fecha es válida
-                DateTime finDelDia = fin.Date.AddDays(1);
-                query = query.Where(r => r.Fecha < finDelDia);
-            }
-
-            var historial = query
-                .OrderByDescending(r => r.Fecha)
-                .ThenByDescending(r => r.Id)
-                .ToList();
-
-            return Ok(new
-            {
-                TotalReservas = historial.Count,
-                FechaConsulta = DateTime.Now,
-                Filtros = new
-                {
-                    UsuarioId = usuarioId,
-                    EspacioId = espacioId,
-                    Estado = estado,
-                    EstadoTexto = estado.HasValue ? ((EstadoReserva)estado.Value).ToString() : null,
-                    FechaInicio = fechaInicio,
-                    FechaFin = fechaFin
-                },
-                ConsultadoPor = new
-                {
-                    Id = userInfo.Id,
-                    Email = userInfo.Email,
-                    Rol = userInfo.Role
-                },
-                Reservas = historial.Select(r => new
-                {
-                    Id = r.Id,
-                    UsuarioId = r.UsuarioId,
-                    Usuario = new
-                    {
-                        Id = r.Usuario.Id,
-                        Nombre = r.Usuario.Nombre,
-                        Email = r.Usuario.Email,
-                        Rol = r.Usuario.Rol.ToString()
-                    },
-                    EspacioId = r.EspacioId,
-                    Espacio = new
-                    {
-                        Id = r.Espacio.Id,
-                        Nombre = r.Espacio.Nombre,
-                        Tipo = r.Espacio.Tipo.ToString(),
-                        Ubicacion = r.Espacio.Ubicacion
-                    },
-                    Fecha = r.Fecha,
-                    Horario = r.Horario,
-                    Estado = r.Estado.ToString()
-                })
             });
         }
 
@@ -1558,342 +1180,6 @@ namespace GestorReservas.Controllers
                     EspaciosNoDisponibles = espaciosOcupados
                 }
             });
-        }
-
-        // NUEVO: Consultas agrupadas por período - ACCESO PÚBLICO
-        [HttpGet]
-        [Route("api/Reserva/reportes/por-periodo")]
-        public IHttpActionResult ConsultarReservasPorPeriodo(string periodo = "dia", int? espacioId = null,
-            string fechaInicio = null, string fechaFin = null)
-        {
-            // Validar JWT token
-            var userInfo = ValidateJwtToken();
-            if (userInfo == null)
-                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
-
-            // TODOS los usuarios pueden hacer esta consulta
-            // No hay restricción de rol aquí
-
-            // Validar período
-            if (periodo != "dia" && periodo != "semana" && periodo != "mes")
-                return BadRequest("Período inválido. Use: 'dia', 'semana' o 'mes'");
-
-            var query = db.Reservas
-                .Include(r => r.Usuario)
-                .Include(r => r.Espacio)
-                .AsQueryable();
-
-            // Filtro por espacio (si se especifica)
-            if (espacioId.HasValue)
-            {
-                var espacio = db.Espacios.Find(espacioId.Value);
-                if (espacio == null)
-                    return BadRequest($"No existe un espacio con ID {espacioId.Value}");
-                query = query.Where(r => r.EspacioId == espacioId.Value);
-            }
-
-            // Aplicar filtros de fecha
-            DateTime fechaInicioFiltro = DateTime.Now.AddMonths(-1); // Por defecto último mes
-            DateTime fechaFinFiltro = DateTime.Now;
-
-            if (!string.IsNullOrEmpty(fechaInicio))
-            {
-                if (!DateTime.TryParse(fechaInicio, out fechaInicioFiltro))
-                    return BadRequest("Formato de fecha de inicio inválido. Use formato YYYY-MM-DD");
-            }
-
-            if (!string.IsNullOrEmpty(fechaFin))
-            {
-                if (!DateTime.TryParse(fechaFin, out fechaFinFiltro))
-                    return BadRequest("Formato de fecha de fin inválido. Use formato YYYY-MM-DD");
-            }
-
-            query = query.Where(r => r.Fecha >= fechaInicioFiltro && r.Fecha <= fechaFinFiltro);
-
-            var reservas = query.ToList();
-
-            // Agrupar según el período solicitado
-            var resultadosAgrupados = new List<dynamic>();
-
-            if (periodo == "dia")
-            {
-                var gruposPorDia = reservas
-                    .GroupBy(r => r.Fecha.Date)
-                    .OrderBy(g => g.Key)
-                    .Select(g => new
-                    {
-                        Fecha = g.Key,
-                        TotalReservas = g.Count(),
-                        Estados = g.GroupBy(r => r.Estado).Select(e => new
-                        {
-                            Estado = e.Key.ToString(),
-                            Cantidad = e.Count()
-                        }),
-                        Espacios = g.GroupBy(r => r.Espacio.Nombre).Select(e => new
-                        {
-                            Espacio = e.Key,
-                            Cantidad = e.Count()
-                        }),
-                        Reservas = g.Select(r => new
-                        {
-                            Id = r.Id,
-                            Usuario = r.Usuario.Nombre,
-                            Espacio = r.Espacio.Nombre,
-                            Horario = r.Horario,
-                            Estado = r.Estado.ToString()
-                        })
-                    });
-                resultadosAgrupados = gruposPorDia.Cast<dynamic>().ToList();
-            }
-            else if (periodo == "semana")
-            {
-                var gruposPorSemana = reservas
-                    .GroupBy(r => new
-                    {
-                        Año = r.Fecha.Year,
-                        Semana = GetWeekOfYear(r.Fecha)
-                    })
-                    .OrderBy(g => g.Key.Año).ThenBy(g => g.Key.Semana)
-                    .Select(g => new
-                    {
-                        Año = g.Key.Año,
-                        Semana = g.Key.Semana,
-                        FechaInicio = g.Min(r => r.Fecha).Date,
-                        FechaFin = g.Max(r => r.Fecha).Date,
-                        TotalReservas = g.Count(),
-                        Estados = g.GroupBy(r => r.Estado).Select(e => new
-                        {
-                            Estado = e.Key.ToString(),
-                            Cantidad = e.Count()
-                        }),
-                        Espacios = g.GroupBy(r => r.Espacio.Nombre).Select(e => new
-                        {
-                            Espacio = e.Key,
-                            Cantidad = e.Count()
-                        }),
-                        ReservasPorDia = g.GroupBy(r => r.Fecha.Date).Select(d => new
-                        {
-                            Fecha = d.Key,
-                            Cantidad = d.Count()
-                        })
-                    });
-                resultadosAgrupados = gruposPorSemana.Cast<dynamic>().ToList();
-            }
-            else if (periodo == "mes")
-            {
-                var gruposPorMes = reservas
-                    .GroupBy(r => new
-                    {
-                        Año = r.Fecha.Year,
-                        Mes = r.Fecha.Month
-                    })
-                    .OrderBy(g => g.Key.Año).ThenBy(g => g.Key.Mes)
-                    .Select(g => new
-                    {
-                        Año = g.Key.Año,
-                        Mes = g.Key.Mes,
-                        NombreMes = new DateTime(g.Key.Año, g.Key.Mes, 1).ToString("MMMM yyyy"),
-                        TotalReservas = g.Count(),
-                        Estados = g.GroupBy(r => r.Estado).Select(e => new
-                        {
-                            Estado = e.Key.ToString(),
-                            Cantidad = e.Count()
-                        }),
-                        Espacios = g.GroupBy(r => r.Espacio.Nombre).Select(e => new
-                        {
-                            Espacio = e.Key,
-                            Cantidad = e.Count()
-                        }),
-                        ReservasPorSemana = g.GroupBy(r => GetWeekOfYear(r.Fecha)).Select(s => new
-                        {
-                            Semana = s.Key,
-                            Cantidad = s.Count()
-                        })
-                    });
-                resultadosAgrupados = gruposPorMes.Cast<dynamic>().ToList();
-            }
-
-            return Ok(new
-            {
-                TipoConsulta = $"Agrupación por {periodo}",
-                Periodo = periodo,
-                FechaConsulta = DateTime.Now,
-                Filtros = new
-                {
-                    EspacioId = espacioId,
-                    FechaInicio = fechaInicioFiltro.Date,
-                    FechaFin = fechaFinFiltro.Date
-                },
-                ConsultadoPor = new
-                {
-                    Id = userInfo.Id,
-                    Email = userInfo.Email,
-                    Rol = userInfo.Role
-                },
-                TotalReservasEnPeriodo = reservas.Count,
-                TotalGrupos = resultadosAgrupados.Count,
-                ResultadosAgrupados = resultadosAgrupados
-            });
-        }
-
-        // NUEVO: Consultas filtradas - SOLO ADMIN/COORDINADOR
-        [HttpGet]
-        [Route("api/Reserva/reportes/filtrado-avanzado")]
-        public IHttpActionResult ConsultarReservasFiltradoAvanzado(int? usuarioId = null, string tipoEspacio = null,
-            int? estado = null, string fechaInicio = null, string fechaFin = null)
-        {
-            // Validar JWT token
-            var userInfo = ValidateJwtToken();
-            if (userInfo == null)
-                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
-
-            // SOLO administradores y coordinadores pueden hacer consultas filtradas avanzadas
-            if (userInfo.Role != "Administrador" && userInfo.Role != "Coordinador")
-                return Content(System.Net.HttpStatusCode.Forbidden,
-                    "Solo administradores y coordinadores pueden realizar consultas filtradas avanzadas");
-
-            var query = db.Reservas
-                .Include(r => r.Usuario)
-                .Include(r => r.Espacio)
-                .AsQueryable();
-
-            // Filtro por usuario
-            if (usuarioId.HasValue)
-            {
-                var usuario = db.Usuarios.Find(usuarioId.Value);
-                if (usuario == null)
-                    return BadRequest($"No existe un usuario con ID {usuarioId.Value}");
-                query = query.Where(r => r.UsuarioId == usuarioId.Value);
-            }
-
-            // Filtro por tipo de espacio
-            if (!string.IsNullOrEmpty(tipoEspacio))
-            {
-                TipoEspacio tipoEnum;
-                if (!Enum.TryParse(tipoEspacio, true, out tipoEnum))
-                    return BadRequest($"Tipo de espacio inválido: {tipoEspacio}. Tipos válidos: Aula, Laboratorio, Auditorio");
-                query = query.Where(r => r.Espacio.Tipo == tipoEnum);
-            }
-
-            // Filtro por estado
-            if (estado.HasValue)
-            {
-                if (!Enum.IsDefined(typeof(EstadoReserva), estado.Value))
-                    return BadRequest($"Estado de reserva inválido: {estado.Value}. Estados válidos: 0=Pendiente, 1=Aprobada, 2=Rechazada");
-                query = query.Where(r => (int)r.Estado == estado.Value);
-            }
-
-            // Aplicar filtros de fecha
-            if (!string.IsNullOrEmpty(fechaInicio))
-            {
-                DateTime inicio;
-                if (!DateTime.TryParse(fechaInicio, out inicio))
-                    return BadRequest("Formato de fecha de inicio inválido. Use formato YYYY-MM-DD");
-                query = query.Where(r => r.Fecha >= inicio);
-            }
-
-            if (!string.IsNullOrEmpty(fechaFin))
-            {
-                DateTime fin;
-                if (!DateTime.TryParse(fechaFin, out fin))
-                    return BadRequest("Formato de fecha de fin inválido. Use formato YYYY-MM-DD");
-
-                if (!string.IsNullOrEmpty(fechaInicio))
-                {
-                    DateTime inicio;
-                    DateTime.TryParse(fechaInicio, out inicio);
-                    if (inicio.Date > fin.Date)
-                        return BadRequest("La fecha de inicio no puede ser mayor que la fecha de fin");
-                }
-
-                DateTime finDelDia = fin.Date.AddDays(1);
-                query = query.Where(r => r.Fecha < finDelDia);
-            }
-
-            var reservas = query
-                .OrderByDescending(r => r.Fecha)
-                .ThenByDescending(r => r.Id)
-                .ToList();
-
-            // Generar estadísticas
-            var estadisticas = new
-            {
-                TotalReservas = reservas.Count,
-                PorEstado = reservas.GroupBy(r => r.Estado).Select(g => new
-                {
-                    Estado = g.Key.ToString(),
-                    Cantidad = g.Count(),
-                    Porcentaje = Math.Round((double)g.Count() / reservas.Count * 100, 2)
-                }),
-                PorTipoEspacio = reservas.GroupBy(r => r.Espacio.Tipo).Select(g => new
-                {
-                    Tipo = g.Key.ToString(),
-                    Cantidad = g.Count(),
-                    Porcentaje = Math.Round((double)g.Count() / reservas.Count * 100, 2)
-                }),
-                PorUsuario = reservas.GroupBy(r => r.Usuario.Nombre).Select(g => new
-                {
-                    Usuario = g.Key,
-                    Cantidad = g.Count(),
-                    Porcentaje = Math.Round((double)g.Count() / reservas.Count * 100, 2)
-                }).OrderByDescending(x => x.Cantidad).Take(10) // Top 10 usuarios
-            };
-
-            return Ok(new
-            {
-                TipoConsulta = "Filtrado Avanzado",
-                FechaConsulta = DateTime.Now,
-                Filtros = new
-                {
-                    UsuarioId = usuarioId,
-                    TipoEspacio = tipoEspacio,
-                    Estado = estado,
-                    EstadoTexto = estado.HasValue ? ((EstadoReserva)estado.Value).ToString() : null,
-                    FechaInicio = fechaInicio,
-                    FechaFin = fechaFin
-                },
-                ConsultadoPor = new
-                {
-                    Id = userInfo.Id,
-                    Email = userInfo.Email,
-                    Rol = userInfo.Role
-                },
-                Estadisticas = estadisticas,
-                Reservas = reservas.Select(r => new
-                {
-                    Id = r.Id,
-                    UsuarioId = r.UsuarioId,
-                    Usuario = new
-                    {
-                        Id = r.Usuario.Id,
-                        Nombre = r.Usuario.Nombre,
-                        Email = r.Usuario.Email,
-                        Rol = r.Usuario.Rol.ToString()
-                    },
-                    EspacioId = r.EspacioId,
-                    Espacio = new
-                    {
-                        Id = r.Espacio.Id,
-                        Nombre = r.Espacio.Nombre,
-                        Tipo = r.Espacio.Tipo.ToString(),
-                        Ubicacion = r.Espacio.Ubicacion
-                    },
-                    Fecha = r.Fecha,
-                    Horario = r.Horario,
-                    Estado = r.Estado.ToString()
-                })
-            });
-        }
-
-        // Función auxiliar para obtener número de semana
-        private int GetWeekOfYear(DateTime date)
-        {
-            var culture = new CultureInfo("es-ES");
-            var calendar = culture.Calendar;
-            var calendarWeekRule = culture.DateTimeFormat.CalendarWeekRule;
-            var firstDayOfWeek = culture.DateTimeFormat.FirstDayOfWeek;
-
-            return calendar.GetWeekOfYear(date, calendarWeekRule, firstDayOfWeek);
         }
 
         protected override void Dispose(bool disposing)

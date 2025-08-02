@@ -154,6 +154,7 @@
   <ItemGroup>
     <Compile Include="App_Start\WebApiConfig.cs" />
     <Compile Include="Controllers\AuthController.cs" />
+    <Compile Include="Controllers\DepartamentoController.cs" />
     <Compile Include="Controllers\EspacioController.cs" />
     <Compile Include="Controllers\ReservaController.cs" />
     <Compile Include="Controllers\UsuarioController.cs" />
@@ -189,7 +190,16 @@
     <Compile Include="Migrations\202507292140231_Nuevos-Usuarios.Designer.cs">
       <DependentUpon>202507292140231_Nuevos-Usuarios.cs</DependentUpon>
     </Compile>
+    <Compile Include="Migrations\202508021655170_AgregarDepartamentos.cs" />
+    <Compile Include="Migrations\202508021655170_AgregarDepartamentos.Designer.cs">
+      <DependentUpon>202508021655170_AgregarDepartamentos.cs</DependentUpon>
+    </Compile>
+    <Compile Include="Migrations\202508021747079_Actualizacion-Seed.cs" />
+    <Compile Include="Migrations\202508021747079_Actualizacion-Seed.Designer.cs">
+      <DependentUpon>202508021747079_Actualizacion-Seed.cs</DependentUpon>
+    </Compile>
     <Compile Include="Migrations\Configuration.cs" />
+    <Compile Include="Models\Departamento.cs" />
     <Compile Include="Models\DTOs\EspacioDTOs.cs" />
     <Compile Include="Models\DTOs\ReservaDTOs.cs" />
     <Compile Include="Models\DTOs\UsuarioDTOs.cs" />
@@ -234,6 +244,12 @@
     </EmbeddedResource>
     <EmbeddedResource Include="Migrations\202507292140231_Nuevos-Usuarios.resx">
       <DependentUpon>202507292140231_Nuevos-Usuarios.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Migrations\202508021655170_AgregarDepartamentos.resx">
+      <DependentUpon>202508021655170_AgregarDepartamentos.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Migrations\202508021747079_Actualizacion-Seed.resx">
+      <DependentUpon>202508021747079_Actualizacion-Seed.cs</DependentUpon>
     </EmbeddedResource>
   </ItemGroup>
   <PropertyGroup>
