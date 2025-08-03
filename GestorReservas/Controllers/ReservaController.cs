@@ -101,7 +101,8 @@ namespace GestorReservas.Controllers
                 },
                 Fecha = r.Fecha,
                 Horario = r.Horario,
-                Estado = r.Estado.ToString()
+                Estado = r.Estado.ToString(),
+                Descripcion = r.Descripcion // AGREGAR: Descripción de la reserva
             }).ToList();
 
             // Respuesta con metadata de consulta
@@ -186,7 +187,8 @@ namespace GestorReservas.Controllers
                 },
                 Fecha = reserva.Fecha,
                 Horario = reserva.Horario,
-                Estado = reserva.Estado.ToString()
+                Estado = reserva.Estado.ToString(),
+                Descripcion = reserva.Descripcion // AGREGAR: Descripción de la reserva
             };
 
             return Ok(resultado);
@@ -199,9 +201,9 @@ namespace GestorReservas.Controllers
         /// <summary>
         /// POST: api/Reserva
         /// Crea una nueva reserva con múltiples validaciones:
-        /// - Validación de permisos
-        /// - Validación de horario
-        /// - Validación de disponibilidad del espacio
+        /// - Validación de permisos por rol
+        /// - Coordinadores pueden crear reservas para usuarios de su departamento
+        /// - Validación de horario y disponibilidad del espacio
         /// - Validación de conflictos de usuario
         /// </summary>
         [HttpPost]
@@ -216,23 +218,60 @@ namespace GestorReservas.Controllers
             if (userInfo == null)
                 return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación inválido. Debe autenticarse para crear reservas");
 
-            // Validar que el usuario que hace la reserva existe
-            var usuario = db.Usuarios.Find(reserva.UsuarioId);
-            if (usuario == null)
-                return BadRequest(string.Format("No existe un usuario con ID {0}", reserva.UsuarioId));
+            // Obtener información del usuario autenticado
+            var usuarioAutenticado = db.Usuarios.Include(u => u.Departamento).FirstOrDefault(u => u.Id == userInfo.Id);
+            if (usuarioAutenticado == null)
+                return Content(System.Net.HttpStatusCode.Unauthorized, "Usuario del token no encontrado en el sistema");
 
-            // Validar que el usuario del token coincide con el de la reserva (seguridad)
-            if (userInfo.Id != reserva.UsuarioId)
-                return BadRequest("No puede crear reservas para otros usuarios");
+            // Validar que el usuario para quien se hace la reserva existe
+            var usuarioReserva = db.Usuarios.Include(u => u.Departamento).FirstOrDefault(u => u.Id == reserva.UsuarioId);
+            if (usuarioReserva == null)
+                return BadRequest($"No existe un usuario con ID {reserva.UsuarioId}");
 
-            // Validar que el usuario tiene un rol válido para hacer reservas
-            if (usuario.Rol != RolUsuario.Profesor && usuario.Rol != RolUsuario.Coordinador && usuario.Rol != RolUsuario.Administrador)
-                return BadRequest("Solo profesores, coordinadores y administradores pueden crear reservas");
+            // Validar permisos según el rol del usuario autenticado
+            if (userInfo.Role == "Profesor")
+            {
+                // Profesores solo pueden crear reservas para sí mismos
+                if (userInfo.Id != reserva.UsuarioId)
+                    return Content(System.Net.HttpStatusCode.Forbidden, "Los profesores solo pueden crear reservas para sí mismos");
+            }
+            else if (userInfo.Role == "Coordinador")
+            {
+                // Coordinadores pueden crear reservas para usuarios de su departamento
+                if (usuarioAutenticado.Departamento == null)
+                    return Content(System.Net.HttpStatusCode.Forbidden, "Coordinador no tiene departamento asignado. No puede crear reservas");
 
-            // Validar que el espacio existe
+                // Si no es para sí mismo, validar que el usuario objetivo pertenezca al mismo departamento
+                if (userInfo.Id != reserva.UsuarioId)
+                {
+                    if (usuarioReserva.DepartamentoId != usuarioAutenticado.DepartamentoId)
+                        return Content(System.Net.HttpStatusCode.Forbidden,
+                            $"Solo puede crear reservas para usuarios de su departamento ({usuarioAutenticado.Departamento.Nombre})");
+                }
+            }
+            else if (userInfo.Role == "Administrador")
+            {
+                // Administradores pueden crear reservas para cualquier usuario
+                // No hay restricciones adicionales
+            }
+            else
+            {
+                return Content(System.Net.HttpStatusCode.Forbidden, "No tiene permisos para crear reservas");
+            }
+
+            // Validar que el usuario objetivo tiene un rol válido para tener reservas
+            if (usuarioReserva.Rol != RolUsuario.Profesor &&
+                usuarioReserva.Rol != RolUsuario.Coordinador &&
+                usuarioReserva.Rol != RolUsuario.Administrador)
+                return BadRequest("Solo profesores, coordinadores y administradores pueden tener reservas");
+
+            // Validar que el espacio existe y está disponible
             var espacio = db.Espacios.Find(reserva.EspacioId);
             if (espacio == null)
-                return BadRequest(string.Format("No existe un espacio con ID {0}", reserva.EspacioId));
+                return BadRequest($"No existe un espacio con ID {reserva.EspacioId}");
+
+            if (!espacio.Disponible)
+                return BadRequest("El espacio seleccionado no está disponible para reservas");
 
             // Validar formato y lógica del horario (HH:mm-HH:mm)
             var validacionHorario = ValidarHorario(reserva.Horario);
@@ -248,10 +287,10 @@ namespace GestorReservas.Controllers
             if (!validacionSolapamiento.EsValido)
                 return BadRequest(validacionSolapamiento.Mensaje);
 
-            // Validar que el usuario no tenga otra reserva en el mismo horario
-            var validacionUsuario = ValidarConflictoUsuario(reserva.UsuarioId, reserva.Fecha, reserva.Horario);
-            if (!validacionUsuario.EsValido)
-                return BadRequest(validacionUsuario.Mensaje);
+            // Validar que el usuario objetivo no tenga otra reserva en el mismo horario
+            var validacionConflictoUsuario = ValidarConflictoUsuario(reserva.UsuarioId, reserva.Fecha, reserva.Horario);
+            if (!validacionConflictoUsuario.EsValido)
+                return BadRequest(validacionConflictoUsuario.Mensaje);
 
             // Crear reserva con estado pendiente por defecto
             reserva.Estado = EstadoReserva.Pendiente;
@@ -261,10 +300,17 @@ namespace GestorReservas.Controllers
             // Recargar la reserva con las relaciones incluidas para la respuesta
             var reservaCreada = db.Reservas
                 .Include(r => r.Usuario)
+                .Include(r => r.Usuario.Departamento)
                 .Include(r => r.Espacio)
                 .FirstOrDefault(r => r.Id == reserva.Id);
 
-            // Crear respuesta sin datos sensibles
+            // Determinar quién creó la reserva para el mensaje
+            var creadaPorOtro = userInfo.Id != reserva.UsuarioId;
+            var mensajeCreacion = creadaPorOtro
+                ? $"Reserva creada exitosamente para {reservaCreada.Usuario.Nombre} por {usuarioAutenticado.Nombre}"
+                : "Reserva creada exitosamente";
+
+            // Crear respuesta completa
             var respuesta = new
             {
                 Id = reservaCreada.Id,
@@ -274,7 +320,13 @@ namespace GestorReservas.Controllers
                     Id = reservaCreada.Usuario.Id,
                     Nombre = reservaCreada.Usuario.Nombre,
                     Email = reservaCreada.Usuario.Email,
-                    Rol = reservaCreada.Usuario.Rol.ToString()
+                    Rol = reservaCreada.Usuario.Rol.ToString(),
+                    Departamento = reservaCreada.Usuario.Departamento != null ? new
+                    {
+                        Id = reservaCreada.Usuario.Departamento.Id,
+                        Nombre = reservaCreada.Usuario.Departamento.Nombre,
+                        Codigo = reservaCreada.Usuario.Departamento.Codigo
+                    } : null
                 },
                 EspacioId = reservaCreada.EspacioId,
                 Espacio = new
@@ -282,12 +334,23 @@ namespace GestorReservas.Controllers
                     Id = reservaCreada.Espacio.Id,
                     Nombre = reservaCreada.Espacio.Nombre,
                     Tipo = reservaCreada.Espacio.Tipo.ToString(),
+                    Capacidad = reservaCreada.Espacio.Capacidad,
                     Ubicacion = reservaCreada.Espacio.Ubicacion
                 },
                 Fecha = reservaCreada.Fecha,
                 Horario = reservaCreada.Horario,
                 Estado = reservaCreada.Estado.ToString(),
-                Message = "Reserva creada exitosamente"
+                Descripcion = reservaCreada.Descripcion,
+                CreadaPor = new
+                {
+                    Id = usuarioAutenticado.Id,
+                    Nombre = usuarioAutenticado.Nombre,
+                    Email = usuarioAutenticado.Email,
+                    Rol = usuarioAutenticado.Rol.ToString(),
+                    EsCreadorDiferente = creadaPorOtro
+                },
+                FechaCreacion = DateTime.Now,
+                Message = mensajeCreacion
             };
 
             // Retornar 201 Created con ubicación del recurso
@@ -608,6 +671,7 @@ namespace GestorReservas.Controllers
             reservaExistente.Fecha = reservaDto.Fecha;
             reservaExistente.Horario = reservaDto.Horario;
             reservaExistente.Estado = reservaDto.Estado;
+            reservaExistente.Descripcion = reservaDto.Descripcion; // AGREGAR: Actualizar descripción
 
             // Si no es admin y la reserva estaba aprobada, volver a pendiente si cambió algo importante
             if (userInfo.Role != "Administrador" && reservaExistente.Estado == EstadoReserva.Aprobada)
@@ -652,6 +716,7 @@ namespace GestorReservas.Controllers
                 Fecha = reservaActualizada.Fecha,
                 Horario = reservaActualizada.Horario,
                 Estado = reservaActualizada.Estado.ToString(),
+                Descripcion = reservaActualizada.Descripcion, // AGREGAR: Descripción de la reserva
                 Message = "Reserva actualizada exitosamente"
             };
 
@@ -821,6 +886,7 @@ namespace GestorReservas.Controllers
                 Fecha = reserva.Fecha,
                 Horario = reserva.Horario,
                 Estado = reserva.Estado.ToString(),
+                Descripcion = reserva.Descripcion, // AGREGAR: Descripción de la reserva
                 EliminadoPor = new
                 {
                     Id = userInfo.Id,
@@ -950,7 +1016,8 @@ namespace GestorReservas.Controllers
                         },
                         Fecha = r.Fecha,
                         Horario = r.Horario,
-                        Estado = r.Estado.ToString()
+                        Estado = r.Estado.ToString(),
+                        Descripcion = r.Descripcion // AGREGAR: Descripción de la reserva
                     }),
                     Mensaje = mensaje
                 });
@@ -984,6 +1051,7 @@ namespace GestorReservas.Controllers
                         Fecha = reserva.Fecha,
                         Horario = reserva.Horario,
                         Estado = reserva.Estado.ToString(),
+                        Descripcion = reserva.Descripcion, // AGREGAR: Descripción de la reserva
                         TipoConflicto = "Solapamiento de horarios"
                     });
                 }
@@ -1146,7 +1214,8 @@ namespace GestorReservas.Controllers
                     },
                     Fecha = r.Fecha,
                     Horario = r.Horario,
-                    Estado = r.Estado.ToString()
+                    Estado = r.Estado.ToString(),
+                    Descripcion = r.Descripcion // AGREGAR: Descripción de la reserva
                 })
             });
         }
@@ -1251,7 +1320,8 @@ namespace GestorReservas.Controllers
                     EspacioId = r.EspacioId,
                     Fecha = r.Fecha,
                     Horario = r.Horario,
-                    Estado = r.Estado.ToString()
+                    Estado = r.Estado.ToString(),
+                    Descripcion = r.Descripcion // AGREGAR: Descripción de la reserva
                 })
             });
         }
@@ -1378,7 +1448,8 @@ namespace GestorReservas.Controllers
                     },
                     Fecha = r.Fecha,
                     Horario = r.Horario,
-                    Estado = r.Estado.ToString()
+                    Estado = r.Estado.ToString(),
+                    Descripcion = r.Descripcion // AGREGAR: Descripción de la reserva
                 })
             });
         }
@@ -1566,7 +1637,31 @@ namespace GestorReservas.Controllers
                     Email = userInfo.Email,
                     Rol = userInfo.Role
                 },
-                ReservasPendientes = reservasPendientes
+                ReservasPendientes = reservasPendientes.Select(r => new
+                {
+                    Id = r.Id,
+                    UsuarioId = r.UsuarioId,
+                    Usuario = new
+                    {
+                        Id = r.Usuario.Id,
+                        Nombre = r.Usuario.Nombre,
+                        Email = r.Usuario.Email,
+                        Rol = r.Usuario.Rol.ToString()
+                    },
+                    EspacioId = r.EspacioId,
+                    Espacio = new
+                    {
+                        Id = r.Espacio.Id,
+                        Nombre = r.Espacio.Nombre,
+                        Tipo = r.Espacio.Tipo.ToString(),
+                        Capacidad = r.Espacio.Capacidad,
+                        Ubicacion = r.Espacio.Ubicacion
+                    },
+                    Fecha = r.Fecha,
+                    Horario = r.Horario,
+                    Estado = r.Estado.ToString(),
+                    Descripcion = r.Descripcion // AGREGAR: Descripción de la reserva
+                })
             });
         }
 
@@ -1666,6 +1761,7 @@ namespace GestorReservas.Controllers
                                 Fecha = reserva.Fecha,
                                 Horario = reserva.Horario,
                                 Estado = reserva.Estado.ToString(),
+                                Descripcion = reserva.Descripcion, // AGREGAR: Descripción de la reserva
                                 TipoConflicto = "Solapamiento de horarios"
                             });
                         }
@@ -1733,7 +1829,8 @@ namespace GestorReservas.Controllers
                         },
                         Fecha = r.Fecha,
                         Horario = r.Horario,
-                        Estado = r.Estado.ToString()
+                        Estado = r.Estado.ToString(),
+                        Descripcion = r.Descripcion // AGREGAR: Descripción de la reserva
                     }) : null
                 });
             }
