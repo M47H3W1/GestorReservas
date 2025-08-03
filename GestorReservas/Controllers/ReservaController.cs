@@ -1047,6 +1047,347 @@ namespace GestorReservas.Controllers
 
         #endregion
 
+        #region Historial
+
+        // Consultar historial de reservas por usuario
+        [HttpGet]
+        [Route("api/Reserva/historial/usuario/{usuarioId}")]
+        public IHttpActionResult ConsultarHistorialPorUsuario(int usuarioId, string fechaInicio = null, string fechaFin = null)
+        {
+            // Validar JWT token
+            var userInfo = ValidateJwtToken();
+            if (userInfo == null)
+                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
+
+            // Solo administradores pueden consultar historial
+            if (userInfo.Role != "Administrador")
+                return Content(System.Net.HttpStatusCode.Forbidden, "Solo los administradores pueden consultar historiales de reservas");
+
+            // Validar que el usuario existe
+            var usuario = db.Usuarios.Find(usuarioId);
+            if (usuario == null)
+                return BadRequest($"No existe un usuario con ID {usuarioId}");
+
+            var query = db.Reservas
+                .Where(r => r.UsuarioId == usuarioId)
+                .Include(r => r.Usuario)
+                .Include(r => r.Espacio);
+
+            // Validar y aplicar filtros de fecha
+            if (!string.IsNullOrEmpty(fechaInicio))
+            {
+                DateTime inicio;
+                if (!DateTime.TryParse(fechaInicio, out inicio))
+                    return BadRequest("Formato de fecha de inicio inválido. Use formato YYYY-MM-DD");
+
+                // Aplicar filtro si la fecha es válida
+                query = query.Where(r => r.Fecha >= inicio);
+            }
+
+            if (!string.IsNullOrEmpty(fechaFin))
+            {
+                DateTime fin;
+                if (!DateTime.TryParse(fechaFin, out fin))
+                    return BadRequest("Formato de fecha de fin inválido. Use formato YYYY-MM-DD");
+
+                // Validar que fecha inicio no sea mayor que fecha fin (solo si ambas están presentes)
+                if (!string.IsNullOrEmpty(fechaInicio))
+                {
+                    DateTime inicio;
+                    DateTime.TryParse(fechaInicio, out inicio); // Ya sabemos que es válida
+                    if (inicio.Date > fin.Date)
+                        return BadRequest("La fecha de inicio no puede ser mayor que la fecha de fin");
+                }
+
+                // Aplicar filtro si la fecha es válida
+                DateTime finDelDia = fin.Date.AddDays(1);
+                query = query.Where(r => r.Fecha < finDelDia);
+            }
+
+            var historialUsuario = query
+                .OrderByDescending(r => r.Fecha)
+                .ThenByDescending(r => r.Id)
+                .ToList();
+
+            return Ok(new
+            {
+                UsuarioId = usuarioId,
+                Usuario = new
+                {
+                    Id = usuario.Id,
+                    Nombre = usuario.Nombre,
+                    Email = usuario.Email,
+                    Rol = usuario.Rol.ToString()
+                },
+                TotalReservas = historialUsuario.Count,
+                FechaConsulta = DateTime.Now,
+                Filtros = new
+                {
+                    FechaInicio = fechaInicio,
+                    FechaFin = fechaFin
+                },
+                ConsultadoPor = new
+                {
+                    Id = userInfo.Id,
+                    Email = userInfo.Email,
+                    Rol = userInfo.Role
+                },
+                Reservas = historialUsuario.Select(r => new
+                {
+                    Id = r.Id,
+                    UsuarioId = r.UsuarioId,
+                    EspacioId = r.EspacioId,
+                    Espacio = new
+                    {
+                        Id = r.Espacio.Id,
+                        Nombre = r.Espacio.Nombre,
+                        Tipo = r.Espacio.Tipo.ToString(),
+                        Ubicacion = r.Espacio.Ubicacion
+                    },
+                    Fecha = r.Fecha,
+                    Horario = r.Horario,
+                    Estado = r.Estado.ToString()
+                })
+            });
+        }
+
+        // Consultar historial de reservas por espacio
+        [HttpGet]
+        [Route("api/Reserva/historial/espacio/{espacioId}")]
+        public IHttpActionResult ConsultarHistorialPorEspacio(int espacioId, string fechaInicio = null, string fechaFin = null)
+        {
+            // Validar JWT token
+            var userInfo = ValidateJwtToken();
+            if (userInfo == null)
+                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
+
+            // Solo administradores pueden consultar historial
+            if (userInfo.Role != "Administrador")
+                return Content(System.Net.HttpStatusCode.Forbidden, "Solo los administradores pueden consultar historiales de reservas");
+
+            // Validar que el espacio existe
+            var espacio = db.Espacios.Find(espacioId);
+            if (espacio == null)
+                return BadRequest($"No existe un espacio con ID {espacioId}");
+
+            var query = db.Reservas
+                .Where(r => r.EspacioId == espacioId)
+                .Include(r => r.Usuario)
+                .Include(r => r.Espacio);
+
+            // Validar y aplicar filtros de fecha
+            if (!string.IsNullOrEmpty(fechaInicio))
+            {
+                DateTime inicio;
+                if (!DateTime.TryParse(fechaInicio, out inicio))
+                    return BadRequest("Formato de fecha de inicio inválido. Use formato YYYY-MM-DD");
+
+                // Aplicar filtro si la fecha es válida
+                query = query.Where(r => r.Fecha >= inicio);
+            }
+
+            if (!string.IsNullOrEmpty(fechaFin))
+            {
+                DateTime fin;
+                if (!DateTime.TryParse(fechaFin, out fin))
+                    return BadRequest("Formato de fecha de fin inválido. Use formato YYYY-MM-DD");
+
+                // Validar que fecha inicio no sea mayor que fecha fin (solo si ambas están presentes)
+                if (!string.IsNullOrEmpty(fechaInicio))
+                {
+                    DateTime inicio;
+                    DateTime.TryParse(fechaInicio, out inicio); // Ya sabemos que es válida
+                    if (inicio.Date > fin.Date)
+                        return BadRequest("La fecha de inicio no puede ser mayor que la fecha de fin");
+                }
+
+                // Aplicar filtro si la fecha es válida
+                DateTime finDelDia = fin.Date.AddDays(1);
+                query = query.Where(r => r.Fecha < finDelDia);
+            }
+
+            var historialEspacio = query
+                .OrderByDescending(r => r.Fecha)
+                .ThenByDescending(r => r.Id)
+                .ToList();
+
+            return Ok(new
+            {
+                EspacioId = espacioId,
+                Espacio = new
+                {
+                    Id = espacio.Id,
+                    Nombre = espacio.Nombre,
+                    Tipo = espacio.Tipo.ToString(),
+                    Capacidad = espacio.Capacidad,
+                    Ubicacion = espacio.Ubicacion,
+                    Descripcion = espacio.Descripcion,
+                    Disponible = espacio.Disponible
+                },
+                TotalReservas = historialEspacio.Count,
+                FechaConsulta = DateTime.Now,
+                Filtros = new
+                {
+                    FechaInicio = fechaInicio,
+                    FechaFin = fechaFin
+                },
+                ConsultadoPor = new
+                {
+                    Id = userInfo.Id,
+                    Email = userInfo.Email,
+                    Rol = userInfo.Role
+                },
+                Reservas = historialEspacio.Select(r => new
+                {
+                    Id = r.Id,
+                    UsuarioId = r.UsuarioId,
+                    Usuario = new
+                    {
+                        Id = r.Usuario.Id,
+                        Nombre = r.Usuario.Nombre,
+                        Email = r.Usuario.Email,
+                        Rol = r.Usuario.Rol.ToString()
+                    },
+                    EspacioId = r.EspacioId,
+                    Fecha = r.Fecha,
+                    Horario = r.Horario,
+                    Estado = r.Estado.ToString()
+                })
+            });
+        }
+
+        // Consultar historial completo con filtros múltiples
+        [HttpGet]
+        [Route("api/Reserva/historial")]
+        public IHttpActionResult ConsultarHistorialCompleto(int? usuarioId = null, int? espacioId = null,
+            string fechaInicio = null, string fechaFin = null, int? estado = null)
+        {
+            // Validar JWT token
+            var userInfo = ValidateJwtToken();
+            if (userInfo == null)
+                return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
+
+            // Solo administradores pueden consultar historial completo
+            if (userInfo.Role != "Administrador")
+                return Content(System.Net.HttpStatusCode.Forbidden, "Solo los administradores pueden consultar historiales completos de reservas");
+
+            var query = db.Reservas
+                .Include(r => r.Usuario)
+                .Include(r => r.Espacio)
+                .AsQueryable();
+
+            // Filtro por usuario
+            if (usuarioId.HasValue)
+            {
+                var usuario = db.Usuarios.Find(usuarioId.Value);
+                if (usuario == null)
+                    return BadRequest($"No existe un usuario con ID {usuarioId.Value}");
+                query = query.Where(r => r.UsuarioId == usuarioId.Value);
+            }
+
+            // Filtro por espacio
+            if (espacioId.HasValue)
+            {
+                var espacio = db.Espacios.Find(espacioId.Value);
+                if (espacio == null)
+                    return BadRequest($"No existe un espacio con ID {espacioId.Value}");
+                query = query.Where(r => r.EspacioId == espacioId.Value);
+            }
+
+            // Filtro por estado
+            if (estado.HasValue)
+            {
+                if (!Enum.IsDefined(typeof(EstadoReserva), estado.Value))
+                    return BadRequest($"Estado de reserva inválido: {estado.Value}. Estados válidos: 0=Pendiente, 1=Aprobada, 2=Rechazada");
+                query = query.Where(r => (int)r.Estado == estado.Value);
+            }
+
+            // Validar y aplicar filtros de fecha
+            if (!string.IsNullOrEmpty(fechaInicio))
+            {
+                DateTime inicio;
+                if (!DateTime.TryParse(fechaInicio, out inicio))
+                    return BadRequest("Formato de fecha de inicio inválido. Use formato YYYY-MM-DD");
+
+                // Aplicar filtro si la fecha es válida
+                query = query.Where(r => r.Fecha >= inicio);
+            }
+
+            if (!string.IsNullOrEmpty(fechaFin))
+            {
+                DateTime fin;
+                if (!DateTime.TryParse(fechaFin, out fin))
+                    return BadRequest("Formato de fecha de fin inválido. Use formato YYYY-MM-DD");
+
+                // Validar que fecha inicio no sea mayor que fecha fin (solo si ambas están presentes)
+                if (!string.IsNullOrEmpty(fechaInicio))
+                {
+                    DateTime inicio;
+                    DateTime.TryParse(fechaInicio, out inicio); // Ya sabemos que es válida
+                    if (inicio.Date > fin.Date)
+                        return BadRequest("La fecha de inicio no puede ser mayor que la fecha de fin");
+                }
+
+                // Aplicar filtro si la fecha es válida
+                DateTime finDelDia = fin.Date.AddDays(1);
+                query = query.Where(r => r.Fecha < finDelDia);
+            }
+
+            var historial = query
+                .OrderByDescending(r => r.Fecha)
+                .ThenByDescending(r => r.Id)
+                .ToList();
+
+            return Ok(new
+            {
+                TotalReservas = historial.Count,
+                FechaConsulta = DateTime.Now,
+                Filtros = new
+                {
+                    UsuarioId = usuarioId,
+                    EspacioId = espacioId,
+                    Estado = estado,
+                    EstadoTexto = estado.HasValue ? ((EstadoReserva)estado.Value).ToString() : null,
+                    FechaInicio = fechaInicio,
+                    FechaFin = fechaFin
+                },
+                ConsultadoPor = new
+                {
+                    Id = userInfo.Id,
+                    Email = userInfo.Email,
+                    Rol = userInfo.Role
+                },
+                Reservas = historial.Select(r => new
+                {
+                    Id = r.Id,
+                    UsuarioId = r.UsuarioId,
+                    Usuario = new
+                    {
+                        Id = r.Usuario.Id,
+                        Nombre = r.Usuario.Nombre,
+                        Email = r.Usuario.Email,
+                        Rol = r.Usuario.Rol.ToString()
+                    },
+                    EspacioId = r.EspacioId,
+                    Espacio = new
+                    {
+                        Id = r.Espacio.Id,
+                        Nombre = r.Espacio.Nombre,
+                        Tipo = r.Espacio.Tipo.ToString(),
+                        Ubicacion = r.Espacio.Ubicacion
+                    },
+                    Fecha = r.Fecha,
+                    Horario = r.Horario,
+                    Estado = r.Estado.ToString()
+                })
+            });
+        }
+
+        #endregion
+
+
+
+
         #region Gestión de Estados de Reserva
 
         /// <summary>

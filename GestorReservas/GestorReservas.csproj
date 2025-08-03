@@ -207,6 +207,10 @@
     <Compile Include="Migrations\202508021747079_Actualizacion-Seed.Designer.cs">
       <DependentUpon>202508021747079_Actualizacion-Seed.cs</DependentUpon>
     </Compile>
+    <Compile Include="Migrations\202508030436446_Reestructuracion-Datos.cs" />
+    <Compile Include="Migrations\202508030436446_Reestructuracion-Datos.Designer.cs">
+      <DependentUpon>202508030436446_Reestructuracion-Datos.cs</DependentUpon>
+    </Compile>
     <Compile Include="Migrations\Configuration.cs" />
     <Compile Include="Models\Departamento.cs" />
     <Compile Include="Models\DTOs\EspacioDTOs.cs" />
@@ -260,6 +264,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="Migrations\202508021747079_Actualizacion-Seed.resx">
       <DependentUpon>202508021747079_Actualizacion-Seed.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Migrations\202508030436446_Reestructuracion-Datos.resx">
+      <DependentUpon>202508030436446_Reestructuracion-Datos.cs</DependentUpon>
     </EmbeddedResource>
   </ItemGroup>
   <PropertyGroup>
