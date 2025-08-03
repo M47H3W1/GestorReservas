@@ -275,8 +275,18 @@ namespace GestorReservas.Controllers
             if (usuario == null)
                 return NotFound();
 
-            // CONTROL DE ACCESO: Solo puede actualizar datos propios o si es admin
-            if (userInfo.Id != id && userInfo.Role != "Administrador")
+            // CONTROL DE ACCESO: Solo puede actualizar datos propios, si es admin, o si es coordinador del mismo departamento
+            bool esCoordinadorDelMismoDepartamento = false;
+            if (userInfo.Role == "Coordinador")
+            {
+                var coordinador = db.Usuarios.Find(userInfo.Id);
+                esCoordinadorDelMismoDepartamento = coordinador != null &&
+                    usuario.DepartamentoId.HasValue &&
+                    coordinador.DepartamentoId.HasValue &&
+                    usuario.DepartamentoId == coordinador.DepartamentoId;
+            }
+
+            if (userInfo.Id != id && userInfo.Role != "Administrador" && !esCoordinadorDelMismoDepartamento)
                 return Unauthorized();
 
             // ACTUALIZAR EMAIL SI SE ESTÁ CAMBIANDO
