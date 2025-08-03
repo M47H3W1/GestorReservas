@@ -6,7 +6,7 @@ using System.Web.Http;
 using GestorReservas.DAL;
 using GestorReservas.Models;
 using GestorReservas.Models.DTOs;
-using GestorReservas.Utils; // ← AGREGAR ESTA LÍNEA
+using GestorReservas.Utils;
 using System.Security.Cryptography;
 using System.Text;
 using System.IdentityModel.Tokens.Jwt;
@@ -14,40 +14,76 @@ using Microsoft.IdentityModel.Tokens;
 
 namespace GestorReservas.Controllers
 {
+    /// <summary>
+    /// Controlador para gestionar operaciones CRUD de usuarios
+    /// Incluye autenticación JWT y autorización por roles
+    /// </summary>
     public class UsuarioController : ApiController
     {
+        // Contexto de base de datos para Entity Framework
         private GestorReserva db = new GestorReserva();
 
-        
+        /// <summary>
+        /// Constructor que valida la configuración JWT al inicializar el controlador
+        /// </summary>
         public UsuarioController()
         {
             AppConfig.ValidateJwtConfiguration();
         }
 
-        // GET: api/Usuario
+        #region GET Methods
+
+        /// <summary>
+        /// GET: api/Usuario
+        /// Obtiene la lista completa de usuarios con información de departamento
+        /// Requiere autenticación JWT válida
+        /// </summary>
+        /// <returns>Lista de usuarios con departamentos incluidos</returns>
         [HttpGet]
         public IHttpActionResult Get()
         {
-            // Validar JWT token
+            // Validar JWT token - verificar que el usuario esté autenticado
             var userInfo = ValidateJwtToken();
             if (userInfo == null)
                 return Unauthorized();
 
-            var usuarios = db.Usuarios.ToList();
+            // INCLUIR DEPARTAMENTO EN LA CONSULTA usando Entity Framework Include
+            // Esto evita consultas N+1 cargando departamentos en una sola query
+            var usuarios = db.Usuarios
+                .Include(u => u.Departamento)
+                .ToList();
 
-            // No devolver contraseñas
+            // ACTUALIZAR RESPUESTA PARA INCLUIR DEPARTAMENTO
+            // Mapear usuarios a objeto anónimo con información completa
             var usuariosResponse = usuarios.Select(u => new
             {
                 Id = u.Id,
                 Nombre = u.Nombre,
                 Email = u.Email,
-                Rol = u.Rol.ToString()
+                Rol = u.Rol.ToString(), // Convertir enum a string
+                DepartamentoId = u.DepartamentoId,
+                // Incluir información completa del departamento si existe
+                Departamento = u.Departamento != null ? new
+                {
+                    Id = u.Departamento.Id,
+                    Nombre = u.Departamento.Nombre,
+                    Codigo = u.Departamento.Codigo,
+                    Tipo = u.Departamento.Tipo.ToString()
+                } : null,
+                // Determinar si el usuario es jefe de su departamento
+                EsJefeDepartamento = u.Departamento != null && u.Departamento.JefeId == u.Id
             });
 
             return Ok(usuariosResponse);
         }
 
-        // GET: api/Usuario/{id}
+        /// <summary>
+        /// GET: api/Usuario/{id}
+        /// Obtiene un usuario específico por ID con información de departamento
+        /// Autorización: Solo el propio usuario, administradores o coordinadores
+        /// </summary>
+        /// <param name="id">ID del usuario a consultar</param>
+        /// <returns>Información del usuario con departamento</returns>
         [HttpGet]
         public IHttpActionResult Get(int id)
         {
@@ -56,73 +92,174 @@ namespace GestorReservas.Controllers
             if (userInfo == null)
                 return Unauthorized();
 
-            var usuario = db.Usuarios.Find(id);
+            // INCLUIR DEPARTAMENTO EN LA CONSULTA
+            var usuario = db.Usuarios
+                .Include(u => u.Departamento)
+                .FirstOrDefault(u => u.Id == id);
+
             if (usuario == null)
                 return NotFound();
 
-            // Solo devolver datos propios o si es admin/coordinador
+            // CONTROL DE ACCESO: Solo devolver datos propios o si es admin/coordinador
+            // Esto implementa el principio de menor privilegio
             if (userInfo.Id != id && userInfo.Role != "Administrador" && userInfo.Role != "Coordinador")
                 return Unauthorized();
 
+            // ACTUALIZAR RESPUESTA PARA INCLUIR DEPARTAMENTO
             var usuarioResponse = new
             {
                 Id = usuario.Id,
                 Nombre = usuario.Nombre,
                 Email = usuario.Email,
-                Rol = usuario.Rol.ToString()
+                Rol = usuario.Rol.ToString(),
+                DepartamentoId = usuario.DepartamentoId,
+                Departamento = usuario.Departamento != null ? new
+                {
+                    Id = usuario.Departamento.Id,
+                    Nombre = usuario.Departamento.Nombre,
+                    Codigo = usuario.Departamento.Codigo,
+                    Tipo = usuario.Departamento.Tipo.ToString()
+                } : null,
+                EsJefeDepartamento = usuario.Departamento != null && usuario.Departamento.JefeId == usuario.Id
             };
 
             return Ok(usuarioResponse);
         }
 
-        // POST: api/Usuario
-        [HttpPost]
-        public IHttpActionResult Post(UsuarioRegistroDto usuarioDto)
+        /// <summary>
+        /// GET: api/Usuario/Perfil
+        /// Obtiene el perfil del usuario autenticado actualmente
+        /// </summary>
+        /// <returns>Información completa del perfil del usuario logueado</returns>
+        [HttpGet]
+        [Route("api/Usuario/Perfil")]
+        public IHttpActionResult Perfil()
         {
-            if (!ModelState.IsValid)
-                return BadRequest(ModelState);
+            // Validar token JWT y obtener información del usuario
+            var userInfo = ValidateJwtToken();
+            if (userInfo == null)
+                return Unauthorized();
 
-            // Validar que el email no exista
-            var existeUsuario = db.Usuarios.Any(u => u.Email == usuarioDto.Email);
-            if (existeUsuario)
-                return BadRequest("Ya existe un usuario con este email");
+            // CONSULTAR USUARIO CON DEPARTAMENTO - userInfo.Id funciona correctamente
+            var usuario = db.Usuarios
+                .Include(u => u.Departamento)
+                .FirstOrDefault(u => u.Id == userInfo.Id);
 
-            // Validar email formato
-            if (!EsEmailValido(usuarioDto.Email))
-                return BadRequest("El formato del email no es válido");
+            if (usuario == null)
+                return NotFound();
 
-            // Validar contraseña
-            var validacionPassword = ValidarPassword(usuarioDto.Password);
-            if (!validacionPassword.EsValido)
-                return BadRequest(validacionPassword.Mensaje);
-
-            // Crear usuario
-            var usuario = new Usuario
-            {
-                Nombre = usuarioDto.Nombre,
-                Email = usuarioDto.Email.ToLower(),
-                Password = HashPassword(usuarioDto.Password),
-                Rol = usuarioDto.Rol
-                // ← QUITAR: FechaCreacion = DateTime.Now
-            };
-
-            db.Usuarios.Add(usuario);
-            db.SaveChanges();
-
-            var respuesta = new
+            // Retornar información completa del perfil
+            return Ok(new
             {
                 Id = usuario.Id,
                 Nombre = usuario.Nombre,
                 Email = usuario.Email,
                 Rol = usuario.Rol.ToString(),
-                Message = "Usuario registrado exitosamente"
-                // ← QUITAR: FechaCreacion = usuario.FechaCreacion
-            };
-
-            return Ok(respuesta); // Cambiar CreatedAtRoute por Ok
+                DepartamentoId = usuario.DepartamentoId,
+                Departamento = usuario.Departamento != null ? new
+                {
+                    Id = usuario.Departamento.Id,
+                    Nombre = usuario.Departamento.Nombre,
+                    Codigo = usuario.Departamento.Codigo,
+                    Tipo = usuario.Departamento.Tipo.ToString()
+                } : null,
+                EsJefeDepartamento = usuario.Departamento != null && usuario.Departamento.JefeId == usuario.Id
+            });
         }
 
-        // PUT: api/Usuario/{id}
+        #endregion
+
+        #region POST Methods
+
+        /// <summary>
+        /// POST: api/Usuario
+        /// Crea un nuevo usuario en el sistema
+        /// Incluye validaciones de email, contraseña y departamento
+        /// </summary>
+        /// <param name="usuarioDto">Datos del usuario a registrar</param>
+        /// <returns>Usuario creado con información completa</returns>
+        [HttpPost]
+        public IHttpActionResult Post(UsuarioRegistroDto usuarioDto)
+        {
+            // Validar modelo según DataAnnotations
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            // VALIDACIÓN DE EMAIL ÚNICO
+            var existeUsuario = db.Usuarios.Any(u => u.Email == usuarioDto.Email);
+            if (existeUsuario)
+                return BadRequest("Ya existe un usuario con este email");
+
+            // VALIDACIÓN DE FORMATO DE EMAIL
+            if (!EsEmailValido(usuarioDto.Email))
+                return BadRequest("El formato del email no es válido");
+
+            // VALIDACIÓN DE CONTRASEÑA (longitud, complejidad, etc.)
+            var validacionPassword = ValidarPassword(usuarioDto.Password);
+            if (!validacionPassword.EsValido)
+                return BadRequest(validacionPassword.Mensaje);
+
+            // VALIDAR DEPARTAMENTO SI SE PROPORCIONA
+            if (usuarioDto.DepartamentoId.HasValue)
+            {
+                var existeDepartamento = db.Departamentos.Any(d => d.Id == usuarioDto.DepartamentoId.Value);
+                if (!existeDepartamento)
+                    return BadRequest("El departamento especificado no existe");
+            }
+
+            // CREAR USUARIO CON CONTRASEÑA HASHEADA
+            var usuario = new Usuario
+            {
+                Nombre = usuarioDto.Nombre,
+                Email = usuarioDto.Email.ToLower(), // Normalizar email a minúsculas
+                Password = HashPassword(usuarioDto.Password), // Hash SHA256
+                Rol = usuarioDto.Rol,
+                DepartamentoId = usuarioDto.DepartamentoId
+            };
+
+            // Guardar en base de datos
+            db.Usuarios.Add(usuario);
+            db.SaveChanges();
+
+            // INCLUIR DEPARTAMENTO EN LA RESPUESTA - consulta adicional necesaria
+            var usuarioConDepartamento = db.Usuarios
+                .Include(u => u.Departamento)
+                .FirstOrDefault(u => u.Id == usuario.Id);
+
+            // Preparar respuesta con información completa
+            var respuesta = new
+            {
+                Id = usuarioConDepartamento.Id,
+                Nombre = usuarioConDepartamento.Nombre,
+                Email = usuarioConDepartamento.Email,
+                Rol = usuarioConDepartamento.Rol.ToString(),
+                DepartamentoId = usuarioConDepartamento.DepartamentoId,
+                Departamento = usuarioConDepartamento.Departamento != null ? new
+                {
+                    Id = usuarioConDepartamento.Departamento.Id,
+                    Nombre = usuarioConDepartamento.Departamento.Nombre,
+                    Codigo = usuarioConDepartamento.Departamento.Codigo,
+                    Tipo = usuarioConDepartamento.Departamento.Tipo.ToString()
+                } : null,
+                Message = "Usuario registrado exitosamente"
+            };
+
+            return Ok(respuesta);
+        }
+
+        #endregion
+
+        #region PUT Methods
+
+        /// <summary>
+        /// PUT: api/Usuario/{id}
+        /// Actualiza un usuario existente
+        /// Autorización: Solo el propio usuario o administradores
+        /// Los administradores pueden cambiar roles y departamentos
+        /// </summary>
+        /// <param name="id">ID del usuario a actualizar</param>
+        /// <param name="usuarioDto">Datos de actualización</param>
+        /// <returns>Usuario actualizado</returns>
         [HttpPut]
         public IHttpActionResult Put(int id, UsuarioActualizarDto usuarioDto)
         {
@@ -138,16 +275,18 @@ namespace GestorReservas.Controllers
             if (usuario == null)
                 return NotFound();
 
-            // Solo puede actualizar datos propios o si es admin
+            // CONTROL DE ACCESO: Solo puede actualizar datos propios o si es admin
             if (userInfo.Id != id && userInfo.Role != "Administrador")
                 return Unauthorized();
 
-            // Validar email si se está cambiando
+            // ACTUALIZAR EMAIL SI SE ESTÁ CAMBIANDO
             if (!string.IsNullOrEmpty(usuarioDto.Email) && usuarioDto.Email != usuario.Email)
             {
+                // Validar formato
                 if (!EsEmailValido(usuarioDto.Email))
                     return BadRequest("El formato del email no es válido");
 
+                // Verificar que no exista otro usuario con el mismo email
                 var existeEmail = db.Usuarios.Any(u => u.Email == usuarioDto.Email.ToLower() && u.Id != id);
                 if (existeEmail)
                     return BadRequest("Ya existe otro usuario con este email");
@@ -155,15 +294,34 @@ namespace GestorReservas.Controllers
                 usuario.Email = usuarioDto.Email.ToLower();
             }
 
-            // Actualizar nombre si se proporciona
+            // ACTUALIZAR NOMBRE SI SE PROPORCIONA
             if (!string.IsNullOrEmpty(usuarioDto.Nombre))
                 usuario.Nombre = usuarioDto.Nombre;
 
-            // Actualizar rol solo si es admin
+            // ACTUALIZAR ROL - SOLO ADMINISTRADORES PUEDEN CAMBIAR ROLES
             if (userInfo.Role == "Administrador" && usuarioDto.Rol.HasValue)
                 usuario.Rol = usuarioDto.Rol.Value;
 
-            // Actualizar contraseña si se proporciona
+            // ACTUALIZAR DEPARTAMENTO - SOLO ADMINISTRADORES
+            if (userInfo.Role == "Administrador" && usuarioDto.DepartamentoId.HasValue)
+            {
+                if (usuarioDto.DepartamentoId.Value == 0)
+                {
+                    // Valor 0 significa remover departamento
+                    usuario.DepartamentoId = null;
+                }
+                else
+                {
+                    // Validar que el departamento existe
+                    var existeDepartamento = db.Departamentos.Any(d => d.Id == usuarioDto.DepartamentoId.Value);
+                    if (!existeDepartamento)
+                        return BadRequest("El departamento especificado no existe");
+
+                    usuario.DepartamentoId = usuarioDto.DepartamentoId.Value;
+                }
+            }
+
+            // ACTUALIZAR CONTRASEÑA SI SE PROPORCIONA
             if (!string.IsNullOrEmpty(usuarioDto.NuevoPassword))
             {
                 var validacionPassword = ValidarPassword(usuarioDto.NuevoPassword);
@@ -173,20 +331,45 @@ namespace GestorReservas.Controllers
                 usuario.Password = HashPassword(usuarioDto.NuevoPassword);
             }
 
+            // Marcar como modificado y guardar
             db.Entry(usuario).State = EntityState.Modified;
             db.SaveChanges();
 
+            // INCLUIR DEPARTAMENTO EN LA RESPUESTA
+            var usuarioActualizado = db.Usuarios
+                .Include(u => u.Departamento)
+                .FirstOrDefault(u => u.Id == id);
+
             return Ok(new
             {
-                Id = usuario.Id,
-                Nombre = usuario.Nombre,
-                Email = usuario.Email,
-                Rol = usuario.Rol.ToString(),
+                Id = usuarioActualizado.Id,
+                Nombre = usuarioActualizado.Nombre,
+                Email = usuarioActualizado.Email,
+                Rol = usuarioActualizado.Rol.ToString(),
+                DepartamentoId = usuarioActualizado.DepartamentoId,
+                Departamento = usuarioActualizado.Departamento != null ? new
+                {
+                    Id = usuarioActualizado.Departamento.Id,
+                    Nombre = usuarioActualizado.Departamento.Nombre,
+                    Codigo = usuarioActualizado.Departamento.Codigo,
+                    Tipo = usuarioActualizado.Departamento.Tipo.ToString()
+                } : null,
                 Message = "Usuario actualizado exitosamente"
             });
         }
 
-        // DELETE: api/Usuario/{id}
+        #endregion
+
+        #region DELETE Methods
+
+        /// <summary>
+        /// DELETE: api/Usuario/{id}
+        /// Elimina un usuario del sistema
+        /// Autorización: Solo administradores
+        /// Incluye validaciones de integridad referencial
+        /// </summary>
+        /// <param name="id">ID del usuario a eliminar</param>
+        /// <returns>Confirmación de eliminación</returns>
         [HttpDelete]
         public IHttpActionResult Delete(int id)
         {
@@ -195,7 +378,7 @@ namespace GestorReservas.Controllers
             if (userInfo == null)
                 return Unauthorized();
 
-            // Solo admin puede eliminar usuarios
+            // SOLO ADMINISTRADORES PUEDEN ELIMINAR USUARIOS
             if (userInfo.Role != "Administrador")
                 return Unauthorized();
 
@@ -203,7 +386,7 @@ namespace GestorReservas.Controllers
             if (usuario == null)
                 return NotFound();
 
-            // No permitir eliminar el último administrador
+            // PROTECCIÓN: No permitir eliminar el último administrador
             if (usuario.Rol == RolUsuario.Administrador)
             {
                 var totalAdmins = db.Usuarios.Count(u => u.Rol == RolUsuario.Administrador);
@@ -211,13 +394,20 @@ namespace GestorReservas.Controllers
                     return BadRequest("No se puede eliminar el último administrador del sistema");
             }
 
-            // Verificar si tiene reservas pendientes o aprobadas
+            // VERIFICAR SI ES JEFE DE DEPARTAMENTO
+            // Prevenir eliminación de usuarios que son jefes
+            var esJefeDepartamento = db.Departamentos.Any(d => d.JefeId == id);
+            if (esJefeDepartamento)
+                return BadRequest("No se puede eliminar un usuario que es jefe de departamento. Asigne otro jefe primero.");
+
+            // VERIFICAR INTEGRIDAD REFERENCIAL - reservas activas
             var tieneReservasActivas = db.Reservas.Any(r => r.UsuarioId == id &&
                 (r.Estado == EstadoReserva.Pendiente || r.Estado == EstadoReserva.Aprobada));
 
             if (tieneReservasActivas)
                 return BadRequest("El usuario tiene reservas activas. Cancele las reservas antes de eliminar.");
 
+            // Proceder con la eliminación
             db.Usuarios.Remove(usuario);
             db.SaveChanges();
 
@@ -225,28 +415,6 @@ namespace GestorReservas.Controllers
             {
                 Message = "Usuario eliminado exitosamente",
                 UsuarioId = id
-            });
-        }
-
-        // GET: api/Usuario/Perfil
-        [HttpGet]
-        [Route("api/Usuario/Perfil")]
-        public IHttpActionResult Perfil()
-        {
-            var userInfo = ValidateJwtToken();
-            if (userInfo == null)
-                return Unauthorized();
-
-            var usuario = db.Usuarios.Find(userInfo.Id);
-            if (usuario == null)
-                return NotFound();
-
-            return Ok(new
-            {
-                Id = usuario.Id,
-                Nombre = usuario.Nombre,
-                Email = usuario.Email,
-                Rol = usuario.Rol.ToString()
             });
         }
 
@@ -265,6 +433,11 @@ namespace GestorReservas.Controllers
             return new ValidacionResult(true, "Contraseña válida");
         }
 
+        /// <summary>
+        /// Valida el formato de email usando MailAddress
+        /// </summary>
+        /// <param name="email">Email a validar</param>
+        /// <returns>True si el formato es válido</returns>
         private bool EsEmailValido(string email)
         {
             try
@@ -278,6 +451,15 @@ namespace GestorReservas.Controllers
             }
         }
 
+        #endregion
+
+        #region Métodos de Criptografía
+
+        /// <summary>
+        /// Genera hash SHA256 de la contraseña
+        /// </summary>
+        /// <param name="password">Contraseña en texto plano</param>
+        /// <returns>Hash en Base64</returns>
         private string HashPassword(string password)
         {
             using (var sha256 = SHA256.Create())
@@ -287,16 +469,32 @@ namespace GestorReservas.Controllers
             }
         }
 
+        /// <summary>
+        /// Verifica si una contraseña coincide con su hash
+        /// </summary>
+        /// <param name="password">Contraseña en texto plano</param>
+        /// <param name="hashedPassword">Hash almacenado</param>
+        /// <returns>True si coinciden</returns>
         private bool VerificarPassword(string password, string hashedPassword)
         {
             return HashPassword(password) == hashedPassword;
         }
 
+        #endregion
+
+        #region JWT Methods
+
+        /// <summary>
+        /// Genera token JWT para un usuario autenticado
+        /// </summary>
+        /// <param name="usuario">Usuario para el cual generar token</param>
+        /// <returns>Token JWT como string</returns>
         private string GenerarTokenJWT(Usuario usuario)
         {
             var tokenHandler = new JwtSecurityTokenHandler();
-            var key = Encoding.ASCII.GetBytes(AppConfig.JwtSecretKey); // ← USAR CONFIG
+            var key = Encoding.ASCII.GetBytes(AppConfig.JwtSecretKey);
 
+            // Configurar claims del token
             var tokenDescriptor = new SecurityTokenDescriptor
             {
                 Subject = new System.Security.Claims.ClaimsIdentity(new[]
@@ -305,7 +503,7 @@ namespace GestorReservas.Controllers
                     new System.Security.Claims.Claim("email", usuario.Email),
                     new System.Security.Claims.Claim("role", usuario.Rol.ToString())
                 }),
-                Expires = DateTime.UtcNow.AddDays(AppConfig.JwtExpirationDays), // ← USAR CONFIG
+                Expires = DateTime.UtcNow.AddDays(AppConfig.JwtExpirationDays),
                 SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
             };
 
@@ -313,40 +511,62 @@ namespace GestorReservas.Controllers
             return tokenHandler.WriteToken(token);
         }
 
-        private dynamic ValidateJwtToken()
+        /// <summary>
+        /// Valida token JWT del header Authorization
+        /// </summary>
+        /// <returns>Información del usuario extraída del token o null si inválido</returns>
+        private JwtUserInfo ValidateJwtToken()
         {
             try
             {
+                // Obtener header Authorization
                 var authHeader = Request.Headers.Authorization;
                 if (authHeader == null || authHeader.Scheme != "Bearer")
                     return null;
 
                 var token = authHeader.Parameter;
                 var tokenHandler = new JwtSecurityTokenHandler();
-                var key = Encoding.ASCII.GetBytes(AppConfig.JwtSecretKey); // ← USAR CONFIG
+                var key = Encoding.ASCII.GetBytes(AppConfig.JwtSecretKey);
 
+                // Validar token con parámetros de seguridad
                 tokenHandler.ValidateToken(token, new TokenValidationParameters
                 {
                     ValidateIssuerSigningKey = true,
                     IssuerSigningKey = new SymmetricSecurityKey(key),
-                    ValidateIssuer = false,
-                    ValidateAudience = false,
-                    ClockSkew = TimeSpan.Zero
+                    ValidateIssuer = false, // No validamos issuer en este caso
+                    ValidateAudience = false, // No validamos audience en este caso
+                    ClockSkew = TimeSpan.Zero // Sin tolerancia de tiempo
                 }, out SecurityToken validatedToken);
 
+                // Extraer claims del token validado
                 var jwtToken = (JwtSecurityToken)validatedToken;
                 var userId = int.Parse(jwtToken.Claims.First(x => x.Type == "id").Value);
                 var userEmail = jwtToken.Claims.First(x => x.Type == "email").Value;
                 var userRole = jwtToken.Claims.First(x => x.Type == "role").Value;
 
-                return new { Id = userId, Email = userEmail, Role = userRole };
+                // RETORNAR OBJETO TIPADO JwtUserInfo
+                return new JwtUserInfo
+                {
+                    Id = userId,
+                    Email = userEmail,
+                    Role = userRole
+                };
             }
             catch
             {
+                // Cualquier error en validación retorna null (no autorizado)
                 return null;
             }
         }
 
+        #endregion
+
+        #region Dispose
+
+        /// <summary>
+        /// Libera recursos del contexto de base de datos
+        /// </summary>
+        /// <param name="disposing">Si está siendo disposed</param>
         protected override void Dispose(bool disposing)
         {
             if (disposing)
@@ -355,5 +575,7 @@ namespace GestorReservas.Controllers
             }
             base.Dispose(disposing);
         }
+
+        #endregion
     }
 }
