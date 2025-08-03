@@ -47,9 +47,10 @@ namespace GestorReservas.Controllers
             if (userInfo == null)
                 return Content(System.Net.HttpStatusCode.Unauthorized, "Token de autenticación requerido");
 
-            // Query base que incluye Usuario y Espacio relacionados
+            // Query base que incluye Usuario, Departamento y Espacio relacionados
             var query = db.Reservas
                 .Include(r => r.Usuario)
+                .Include(r => r.Usuario.Departamento) // AGREGAR: Incluir departamento del usuario
                 .Include(r => r.Espacio)
                 .AsQueryable();
 
@@ -86,7 +87,15 @@ namespace GestorReservas.Controllers
                     Id = r.Usuario.Id,
                     Nombre = r.Usuario.Nombre,
                     Email = r.Usuario.Email,
-                    Rol = r.Usuario.Rol.ToString()
+                    Rol = r.Usuario.Rol.ToString(),
+                    // AGREGAR: Información del departamento del usuario
+                    Departamento = r.Usuario.Departamento != null ? new
+                    {
+                        Id = r.Usuario.Departamento.Id,
+                        Nombre = r.Usuario.Departamento.Nombre,
+                        Codigo = r.Usuario.Departamento.Codigo,
+                        Tipo = r.Usuario.Departamento.Tipo.ToString()
+                    } : null
                 },
                 EspacioId = r.EspacioId,
                 Espacio = new
@@ -102,7 +111,7 @@ namespace GestorReservas.Controllers
                 Fecha = r.Fecha,
                 Horario = r.Horario,
                 Estado = r.Estado.ToString(),
-                Descripcion = r.Descripcion // AGREGAR: Descripción de la reserva
+                Descripcion = r.Descripcion
             }).ToList();
 
             // Respuesta con metadata de consulta
@@ -136,6 +145,7 @@ namespace GestorReservas.Controllers
             // Buscar la reserva incluyendo entidades relacionadas
             var reserva = db.Reservas
                 .Include(r => r.Usuario)
+                .Include(r => r.Usuario.Departamento) // AGREGAR: Incluir departamento del usuario
                 .Include(r => r.Espacio)
                 .FirstOrDefault(r => r.Id == id);
 
@@ -172,7 +182,15 @@ namespace GestorReservas.Controllers
                     Id = reserva.Usuario.Id,
                     Nombre = reserva.Usuario.Nombre,
                     Email = reserva.Usuario.Email,
-                    Rol = reserva.Usuario.Rol.ToString()
+                    Rol = reserva.Usuario.Rol.ToString(),
+                    // AGREGAR: Información del departamento del usuario
+                    Departamento = reserva.Usuario.Departamento != null ? new
+                    {
+                        Id = reserva.Usuario.Departamento.Id,
+                        Nombre = reserva.Usuario.Departamento.Nombre,
+                        Codigo = reserva.Usuario.Departamento.Codigo,
+                        Tipo = reserva.Usuario.Departamento.Tipo.ToString()
+                    } : null
                 },
                 EspacioId = reserva.EspacioId,
                 Espacio = new
@@ -188,7 +206,7 @@ namespace GestorReservas.Controllers
                 Fecha = reserva.Fecha,
                 Horario = reserva.Horario,
                 Estado = reserva.Estado.ToString(),
-                Descripcion = reserva.Descripcion // AGREGAR: Descripción de la reserva
+                Descripcion = reserva.Descripcion
             };
 
             return Ok(resultado);
@@ -957,6 +975,7 @@ namespace GestorReservas.Controllers
             var query = db.Reservas
                 .Where(r => r.EspacioId == espacioId && r.Estado != EstadoReserva.Rechazada)
                 .Include(r => r.Usuario)
+                .Include(r => r.Usuario.Departamento) // AGREGAR: Incluir departamento
                 .Include(r => r.Espacio);
 
             // Aplicar filtro de fecha si se especifica
@@ -1012,7 +1031,14 @@ namespace GestorReservas.Controllers
                         {
                             Id = r.Usuario.Id,
                             Nombre = r.Usuario.Nombre,
-                            Email = r.Usuario.Email
+                            Email = r.Usuario.Email,
+                            // AGREGAR: Información del departamento
+                            Departamento = r.Usuario.Departamento != null ? new
+                            {
+                                Id = r.Usuario.Departamento.Id,
+                                Nombre = r.Usuario.Departamento.Nombre,
+                                Codigo = r.Usuario.Departamento.Codigo
+                            } : null
                         },
                         Fecha = r.Fecha,
                         Horario = r.Horario,
@@ -1132,13 +1158,17 @@ namespace GestorReservas.Controllers
                 return Content(System.Net.HttpStatusCode.Forbidden, "Solo los administradores pueden consultar historiales de reservas");
 
             // Validar que el usuario existe
-            var usuario = db.Usuarios.Find(usuarioId);
+            var usuario = db.Usuarios
+    .Include(u => u.Departamento)
+    .FirstOrDefault(u => u.Id == usuarioId);
+
             if (usuario == null)
                 return BadRequest($"No existe un usuario con ID {usuarioId}");
 
             var query = db.Reservas
                 .Where(r => r.UsuarioId == usuarioId)
                 .Include(r => r.Usuario)
+                .Include(r => r.Usuario.Departamento) // AGREGAR: Incluir departamento
                 .Include(r => r.Espacio);
 
             // Validar y aplicar filtros de fecha
@@ -1185,7 +1215,15 @@ namespace GestorReservas.Controllers
                     Id = usuario.Id,
                     Nombre = usuario.Nombre,
                     Email = usuario.Email,
-                    Rol = usuario.Rol.ToString()
+                    Rol = usuario.Rol.ToString(),
+                    // AGREGAR: Información del departamento
+                    Departamento = usuario.Departamento != null ? new
+                    {
+                        Id = usuario.Departamento.Id,
+                        Nombre = usuario.Departamento.Nombre,
+                        Codigo = usuario.Departamento.Codigo,
+                        Tipo = usuario.Departamento.Tipo.ToString()
+                    } : null
                 },
                 TotalReservas = historialUsuario.Count,
                 FechaConsulta = DateTime.Now,
@@ -1215,7 +1253,7 @@ namespace GestorReservas.Controllers
                     Fecha = r.Fecha,
                     Horario = r.Horario,
                     Estado = r.Estado.ToString(),
-                    Descripcion = r.Descripcion // AGREGAR: Descripción de la reserva
+                    Descripcion = r.Descripcion
                 })
             });
         }
@@ -1242,6 +1280,7 @@ namespace GestorReservas.Controllers
             var query = db.Reservas
                 .Where(r => r.EspacioId == espacioId)
                 .Include(r => r.Usuario)
+                .Include(r => r.Usuario.Departamento) // AGREGAR: Incluir departamento
                 .Include(r => r.Espacio);
 
             // Validar y aplicar filtros de fecha
@@ -1315,13 +1354,21 @@ namespace GestorReservas.Controllers
                         Id = r.Usuario.Id,
                         Nombre = r.Usuario.Nombre,
                         Email = r.Usuario.Email,
-                        Rol = r.Usuario.Rol.ToString()
+                        Rol = r.Usuario.Rol.ToString(),
+                        // AGREGAR: Información del departamento
+                        Departamento = r.Usuario.Departamento != null ? new
+                        {
+                            Id = r.Usuario.Departamento.Id,
+                            Nombre = r.Usuario.Departamento.Nombre,
+                            Codigo = r.Usuario.Departamento.Codigo,
+                            Tipo = r.Usuario.Departamento.Tipo.ToString()
+                        } : null
                     },
                     EspacioId = r.EspacioId,
                     Fecha = r.Fecha,
                     Horario = r.Horario,
                     Estado = r.Estado.ToString(),
-                    Descripcion = r.Descripcion // AGREGAR: Descripción de la reserva
+                    Descripcion = r.Descripcion
                 })
             });
         }
@@ -1343,6 +1390,7 @@ namespace GestorReservas.Controllers
 
             var query = db.Reservas
                 .Include(r => r.Usuario)
+                .Include(r => r.Usuario.Departamento) // AGREGAR: Incluir departamento
                 .Include(r => r.Espacio)
                 .AsQueryable();
 
@@ -1436,7 +1484,15 @@ namespace GestorReservas.Controllers
                         Id = r.Usuario.Id,
                         Nombre = r.Usuario.Nombre,
                         Email = r.Usuario.Email,
-                        Rol = r.Usuario.Rol.ToString()
+                        Rol = r.Usuario.Rol.ToString(),
+                        // AGREGAR: Información del departamento
+                        Departamento = r.Usuario.Departamento != null ? new
+                        {
+                            Id = r.Usuario.Departamento.Id,
+                            Nombre = r.Usuario.Departamento.Nombre,
+                            Codigo = r.Usuario.Departamento.Codigo,
+                            Tipo = r.Usuario.Departamento.Tipo.ToString()
+                        } : null
                     },
                     EspacioId = r.EspacioId,
                     Espacio = new
@@ -1449,7 +1505,7 @@ namespace GestorReservas.Controllers
                     Fecha = r.Fecha,
                     Horario = r.Horario,
                     Estado = r.Estado.ToString(),
-                    Descripcion = r.Descripcion // AGREGAR: Descripción de la reserva
+                    Descripcion = r.Descripcion
                 })
             });
         }
@@ -1603,7 +1659,7 @@ namespace GestorReservas.Controllers
             var query = db.Reservas
                 .Where(r => r.Estado == EstadoReserva.Pendiente)
                 .Include(r => r.Usuario)
-                .Include(r => r.Usuario.Departamento)
+                .Include(r => r.Usuario.Departamento) // AGREGAR: Incluir departamento
                 .Include(r => r.Espacio)
                 .AsQueryable();
 
@@ -1646,7 +1702,15 @@ namespace GestorReservas.Controllers
                         Id = r.Usuario.Id,
                         Nombre = r.Usuario.Nombre,
                         Email = r.Usuario.Email,
-                        Rol = r.Usuario.Rol.ToString()
+                        Rol = r.Usuario.Rol.ToString(),
+                        // AGREGAR: Información del departamento
+                        Departamento = r.Usuario.Departamento != null ? new
+                        {
+                            Id = r.Usuario.Departamento.Id,
+                            Nombre = r.Usuario.Departamento.Nombre,
+                            Codigo = r.Usuario.Departamento.Codigo,
+                            Tipo = r.Usuario.Departamento.Tipo.ToString()
+                        } : null
                     },
                     EspacioId = r.EspacioId,
                     Espacio = new
@@ -1660,7 +1724,7 @@ namespace GestorReservas.Controllers
                     Fecha = r.Fecha,
                     Horario = r.Horario,
                     Estado = r.Estado.ToString(),
-                    Descripcion = r.Descripcion // AGREGAR: Descripción de la reserva
+                    Descripcion = r.Descripcion
                 })
             });
         }
@@ -1720,7 +1784,8 @@ namespace GestorReservas.Controllers
                 // Construir query para reservas del espacio
                 var queryReservas = db.Reservas
                     .Where(r => r.EspacioId == espacio.Id && r.Estado != EstadoReserva.Rechazada)
-                    .Include(r => r.Usuario);
+                    .Include(r => r.Usuario)
+                    .Include(r => r.Usuario.Departamento); // AGREGAR: Incluir departamento
 
                 // Aplicar filtro de fecha si se especifica
                 if (fechaConsulta.HasValue)
@@ -1825,7 +1890,14 @@ namespace GestorReservas.Controllers
                         {
                             Id = r.Usuario.Id,
                             Nombre = r.Usuario.Nombre,
-                            Email = r.Usuario.Email
+                            Email = r.Usuario.Email,
+                            // AGREGAR: Información del departamento
+                            Departamento = r.Usuario.Departamento != null ? new
+                            {
+                                Id = r.Usuario.Departamento.Id,
+                                Nombre = r.Usuario.Departamento.Nombre,
+                                Codigo = r.Usuario.Departamento.Codigo
+                            } : null
                         },
                         Fecha = r.Fecha,
                         Horario = r.Horario,
@@ -1881,6 +1953,7 @@ namespace GestorReservas.Controllers
 
         protected override void Dispose(bool disposing)
         {
+
             if (disposing)
             {
                 db.Dispose();
